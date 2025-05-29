@@ -187,6 +187,7 @@ def atualizar_tabela():
     for index, row in df.iterrows():
         tabela.insert("", "end", iid=index, values=list(row))
 
+
 # Função para permitir edição manual dos horários e do salário base
 def editar_celula():
     item_selecionado = tabela.selection()
@@ -197,29 +198,67 @@ def editar_celula():
     # Obter índice da linha selecionada
     item = item_selecionado[0]
     indice = int(item)
+    
+    # Obter o ID do funcionário da linha selecionada
+    id_funcionario_selecionado = df.at[indice, "ID"]
 
     # Colunas que podem ser editadas
-    colunas_editaveis = ["Entrada", "Saída-Almoço", "Volta-Almoço", "Saída", "Salário Base"]
+    colunas_entrada_saida_salario = ["Entrada", "Saída-Almoço", "Volta-Almoço", "Saída", "Salário Base"]
+    coluna_nota = "Nota"
     
     mudancas_feitas = False
+    
+    # Processar colunas de entrada/saída/salário base (editáveis apenas se em branco)
     for i, coluna in enumerate(df.columns):
-        if coluna in colunas_editaveis:
+        if coluna in colunas_entrada_saida_salario:
             current_value = df.at[indice, coluna]
-            if pd.isna(current_value):
-                current_value = "" # Para exibir vazio no dialog se for NaN
-
-            novo_valor = simpledialog.askstring("Editar", f"Digite o novo valor para {coluna} (Valor Atual: {current_value}):")
             
-            if novo_valor is not None: # Verifica se o usuário não cancelou
-                if novo_valor != str(current_value): # Verifica se houve mudança real
-                    df.at[indice, coluna] = novo_valor
-                    mudancas_feitas = True
+            # Verificar se a célula está em branco (string vazia ou NaN/None)
+            is_empty = (pd.isna(current_value) or str(current_value).strip() == "")
+            
+            if is_empty or coluna == "Salário Base": # Salário Base pode ser editado mesmo se não estiver vazio para aplicar a todos
+                                                      # Mas só será preenchido para os vazios do mesmo funcionário
+                novo_valor = simpledialog.askstring("Editar", f"Digite o novo valor para {coluna}:")
+                
+                if novo_valor is not None: # Verifica se o usuário não cancelou
+                    novo_valor_strip = novo_valor.strip()
+                    if novo_valor_strip != "":
+                        # Se a coluna é "Salário Base" e foi preenchida/alterada, preencher automaticamente para o mesmo ID
+                        if coluna == "Salário Base":
+                            # Preencher todas as células 'Salário Base' para este funcionário que estejam vazias
+                            # Ou que tenham um valor diferente do novo_valor_strip
+                            df.loc[(df["ID"] == id_funcionario_selecionado) & 
+                                   ((df["Salário Base"] == "") | (pd.isna(df["Salário Base"])) | (df["Salário Base"] != novo_valor_strip)), 
+                                   "Salário Base"] = novo_valor_strip
+                        else:
+                            df.at[indice, coluna] = novo_valor_strip
+                        mudancas_feitas = True
+                    else: # Se o usuário digitou vazio, mantém a célula em branco
+                        df.at[indice, coluna] = ""
+                        mudancas_feitas = True
+            # else:
+                # Se a célula não estiver em branco (e não for Salário Base), ela não será editável por esta função para essas colunas.
+
+    # Processar a coluna "Nota" (sempre editável)
+    for i, coluna in enumerate(df.columns):
+        if coluna == coluna_nota:
+            current_value_nota = df.at[indice, coluna]
+            # Formata para exibir vazio se for NaN
+            display_value_nota = "" if pd.isna(current_value_nota) else str(current_value_nota)
+
+            novo_valor_nota = simpledialog.askstring("Editar", f"Digite a nova anotação para '{coluna}' (Atual: {display_value_nota}):")
+            
+            if novo_valor_nota is not None: # Verifica se o usuário não cancelou
+                # Atualiza a nota, mesmo que o valor seja vazio ou pré-existente
+                df.at[indice, coluna] = novo_valor_nota.strip()
+                mudancas_feitas = True
             
     if mudancas_feitas:
         atualizar_tabela()
-        lbl_status.config(text="Dados editados com sucesso!")
+        lbl_status.config(text="Dados e/ou anotação editados com sucesso!")
     else:
-        lbl_status.config(text="Nenhuma alteração foi feita ou a edição foi cancelada.")
+        lbl_status.config(text="Nenhuma alteração foi feita ou as células selecionadas não podem ser editadas.")
+
 
 # Criar interface gráfica
 root = tk.Tk()
