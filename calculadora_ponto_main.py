@@ -1,3 +1,14 @@
+"""
+Calculadora de ponto e Horas Extras
+
+Este aplicativo permite aos usuários carregar planilhas de ponto de funcionários,
+referente ao aparelho de ponto eletrônico Knup 1028, através da planilha padrão gerada pelo equipamento,
+calcular horas trabalhadas, horas devidas, horas extras e o valor correspondente.
+Oferece funcionalidades para edição de dados, filtros, salvamento em formato Excel
+com resumos individuais por funcionário, e configurações personalizáveis para
+cálculo de horas.
+"""
+
 import tkinter as tk
 from tkinter import filedialog, ttk, simpledialog, messagebox
 import pandas as pd
@@ -7,6 +18,8 @@ import re
 import unicodedata
 import json
 from PIL import Image, ImageTk 
+import sys # Adicionado para resource_path
+import os  # Adicionado para resource_path
 
 # Definir o padrão de localização para português do Brasil
 try:
@@ -36,15 +49,32 @@ COL_NOTA = "Nota"
 # Variável global para o DataFrame
 df = pd.DataFrame()
 
-# Variáveis de configuração globais
-CONFIG_FILE = "config.json"
+# --- CONFIGURAÇÕES DO APLICATIVO ---
+def resource_path(relative_path):
+    """
+    Obtém o caminho absoluto para o recurso, funciona para desenvolvimento e para PyInstaller.
+
+    Args:
+        relative_path (str): O caminho relativo para o arquivo de recurso a partir
+                             do diretório base do script ou do diretório temporário _MEIPASS
+                             do PyInstaller.
+    Returns:
+        str: O caminho absoluto para o recurso.
+    """
+    try:
+        # PyInstaller cria uma pasta temporária e armazena o caminhao em _MEIPASS
+        base_path = sys._MEIPASS # pylint: disable=no-member
+    except Exception: # pylint: disable=broad-except # Opcional: para o aviso de exceção muito geral
+        base_path = os.path.abspath(".") # Caminho base para desenvolvimento normal
+    return os.path.join(base_path, relative_path)
+
+CONFIG_FILE = resource_path("config.json")
 app_config = {
-    "horas_normais_h": 8.8, # Equivalente a 08:48
+    "horas_normais_h": 8.8,
     "multiplicador_hora_extra": 1.5
 }
 
-# Constantes para tratamento de valores nulos/especiais
-OMISSAO_VALS = ["omissão", "omissao", "nan", ""] # Adicionado "omissão" em minúsculo
+OMISSAO_VALS = ["omissão", "omissao", "nan", ""]
 ERRO_FORMATO = "INV_FORMATO"
 ERRO_SEQUENCIA = "INV_SEQ"
 HORA_ZERO = "00:00"
@@ -52,6 +82,18 @@ HORA_ZERO = "00:00"
 # --- FUNÇÕES CORE (Lógica do Aplicativo - sem grandes alterações visuais aqui) ---
 
 def load_config():
+
+    """
+    Carrega as configurações do aplicativo do arquivo JSON (config.json).
+
+    Se o arquivo não for encontrado ou houver um erro de decodificação,
+    usa as configurações padrão e tenta salvar um novo arquivo de configuração.
+
+    Side Effects:
+        Modifica a variável global `app_config`.
+        Pode chamar `save_config()` se o arquivo de configuração não existir ou for inválido.
+        Imprime mensagens no console sobre o status do carregamento.
+    """
     global app_config
     try:
         with open(CONFIG_FILE, "r") as f:
@@ -71,6 +113,15 @@ def load_config():
         save_config()
 
 def save_config():
+    """
+    Salva as configurações atuais da variável global `app_config` em um arquivo JSON.
+
+    Exibe uma caixa de mensagem de erro se o salvamento falhar.
+
+    Side Effects:
+        Cria ou sobrescreve o arquivo `config.json`.
+        Imprime mensagens no console sobre o status do salvamento.
+    """
     try:
         with open(CONFIG_FILE, "w") as f:
             json.dump(app_config, f, indent=4)
@@ -79,7 +130,14 @@ def save_config():
         messagebox.showerror("Erro ao Salvar Configurações", f"Não foi possível salvar as configurações:\n{e}")
 
 def update_button_states():
-    """Atualiza o estado dos botões com base no estado da aplicação."""
+    """
+    Atualiza o estado (habilitado/desabilitado) dos botões da interface
+    com base no estado atual da aplicação (DataFrame carregado, seleção na tabela).
+
+    Side Effects:
+        Modifica o atributo 'state' de vários botões da UI (btn_salvar,
+        btn_excluir_id, btn_calcular_totais, btn_editar, btn_remover_fds).
+    """
     if df.empty:
         btn_salvar.config(state="disabled")
         btn_excluir_id.config(state="disabled")
@@ -100,6 +158,18 @@ def update_button_states():
 
 
 def selecionar_arquivo():
+    """
+    Abre um diálogo para o usuário selecionar uma planilha Excel.
+
+    Após a seleção, lê os dados da planilha, processa as colunas,
+    calcula as horas e atualiza a tabela na interface.
+    Atualiza a barra de status com o resultado da operação.
+
+    Side Effects:
+        Modifica a variável global `df` com os dados da planilha.
+        Chama `calcular_todas_horas_e_extras()` e `aplicar_filtros()`.
+        Atualiza `lbl_status` e o estado dos botões através de `update_button_states()`.
+    """
     global df
     root.config(cursor="watch")
     root.update_idletasks()
@@ -161,6 +231,29 @@ def selecionar_arquivo():
 
 
 def _calculate_single_row_hours(row):
+    """
+    Calcula horas devidas, extras, valor de hora extra e notas para uma única linha de dados.
+
+    A função processa os horários de entrada, saída e almoço para determinar o tempo
+    trabalhado. Compara este tempo com as horas normais configuradas para calcular
+    diferenças (devidas ou extras). Também calcula o valor monetário das horas extras
+    com base no salário base e multiplicador configurados. Adiciona notas sobre
+    erros de formato ou sequência de horários.
+
+    Args:
+        row (pd.Series): Uma linha do DataFrame contendo, no mínimo, as colunas:
+                         COL_ENTRADA, COL_SAIDA_ALMOCO, COL_VOLTA_ALMOCO, COL_SAIDA (como strings "HH:MM" ou vazias),
+                         COL_SALARIO_BASE (como float ou NaN),
+                         COL_NOTA (como string).
+
+    Returns:
+        pd.Series: Uma Series contendo os resultados calculados para as colunas:
+                   COL_HORAS_DEVIDAS (str "HH:MM" ou código de erro),
+                   COL_HORAS_EXTRAS (str "HH:MM" ou código de erro),
+                   COL_NOTA (str, potencialmente atualizada com mensagens de erro),
+                   COL_VALOR_HORA_EXTRA (float).
+    """
+
     horas_normais_h_config = app_config["horas_normais_h"]
     multiplicador = app_config["multiplicador_hora_extra"]
 
@@ -292,6 +385,17 @@ def _calculate_single_row_hours(row):
     })
 
 def calcular_todas_horas_e_extras():
+    """
+    Aplica o cálculo de horas (_calculate_single_row_hours) para todas as linhas
+    do DataFrame global `df`.
+
+    Garante que as colunas necessárias para o cálculo existam e tenham tipos
+    adequados antes de aplicar a função de cálculo por linha.
+
+    Side Effects:
+        Modifica as colunas COL_HORAS_DEVIDAS, COL_HORAS_EXTRAS, COL_NOTA,
+        e COL_VALOR_HORA_EXTRA no DataFrame global `df`.
+    """
     global df
     if df.empty: return
 
@@ -316,6 +420,19 @@ def calcular_todas_horas_e_extras():
 
 
 def atualizar_tabela(data_frame_exibir=None):
+    """
+    Atualiza o widget Treeview (tabela) da interface com os dados fornecidos.
+
+    Se `data_frame_exibir` for None, usa o DataFrame global `df`.
+    Formata valores monetários e datas para exibição.
+
+    Args:
+        data_frame_exibir (pd.DataFrame, optional): O DataFrame a ser exibido.
+                                                   Padrão é None (usa o `df` global).
+    Side Effects:
+        Limpa e repopula o widget `tabela` da UI.
+        Atualiza o estado dos botões através de `update_button_states()`.
+    """
     current_df = data_frame_exibir if data_frame_exibir is not None else df.copy()
     for item_view in tabela.get_children():
         tabela.delete(item_view)
@@ -366,6 +483,19 @@ def atualizar_tabela(data_frame_exibir=None):
 
 
 def editar_celula():
+    """
+    Permite ao usuário editar o conteúdo de uma célula selecionada na tabela.
+
+    Abre diálogos para selecionar a coluna e inserir o novo valor.
+    Valida a entrada de acordo com o tipo da coluna (hora, salário, nota, etc.).
+    Se a edição for em uma coluna que afeta cálculos (horários, salário),
+    recalcula a linha modificada e atualiza a tabela.
+
+    Side Effects:
+        Modifica o DataFrame global `df` na linha e coluna editada.
+        Pode chamar `_calculate_single_row_hours` e `aplicar_filtros()`.
+        Atualiza `lbl_status`.
+    """
     global df
     if df.empty or not tabela.selection():
         messagebox.showwarning("Aviso", "Nenhuma planilha carregada ou nenhuma linha selecionada para edição.")
@@ -485,6 +615,17 @@ def editar_celula():
 
 
 def excluir_funcionario_por_id():
+    """
+    Remove todos os registros de funcionários com os IDs fornecidos pelo usuário.
+
+    Pede ao usuário uma lista de IDs separados por vírgula.
+    Confirma a exclusão antes de remover os dados do DataFrame global `df`.
+
+    Side Effects:
+        Modifica o DataFrame global `df`.
+        Chama `aplicar_filtros()` para atualizar a UI.
+        Atualiza `lbl_status` e `update_button_states()`.
+    """
     global df
     if df.empty:
         messagebox.showwarning("Aviso", "Nenhuma planilha carregada.")
@@ -525,6 +666,17 @@ def excluir_funcionario_por_id():
 
 
 def remover_sabado_domingo_manual():
+    """
+    Remove as linhas selecionadas na tabela que correspondem a Sábados ou Domingos.
+
+    Verifica a coluna 'Semana' das linhas selecionadas.
+    Pede confirmação ao usuário antes de remover as linhas do DataFrame global `df`.
+
+    Side Effects:
+        Modifica o DataFrame global `df`.
+        Chama `aplicar_filtros()` para atualizar a UI.
+        Atualiza `lbl_status` e `update_button_states()`.
+    """
     global df
     if df.empty or not tabela.selection():
         messagebox.showwarning("Aviso", "Nenhuma planilha carregada ou nenhuma linha selecionada.")
@@ -573,6 +725,17 @@ def remover_sabado_domingo_manual():
 
 
 def calcular_totais_funcionario():
+    """
+    Calcula os totais de horas normais, extras, devidas e valor de HE por funcionário.
+
+    Os resultados são então exibidos em uma nova janela através da função
+    `exibir_resumo_totais`.
+
+    Side Effects:
+        Mostra uma janela de resumo (`exibir_resumo_totais`).
+        Atualiza `lbl_status`.
+        Pode modificar o DataFrame `df` para garantir tipos corretos antes da soma.
+    """
     global df
     if df.empty:
         messagebox.showwarning("Aviso", "Nenhuma planilha carregada para calcular totais.")
@@ -622,6 +785,16 @@ def calcular_totais_funcionario():
         root.config(cursor="")
 
 def exibir_resumo_totais(resumo_data):
+    """
+    Exibe uma nova janela (Toplevel) com o resumo dos totais por funcionário.
+
+    Args:
+        resumo_data (dict): Um dicionário onde as chaves são nomes de funcionários
+                            e os valores são dicionários com seus totais calculados.
+    Side Effects:
+        Cria e mostra uma nova janela Toplevel.
+        Bloqueia interação com a janela principal até ser fechada.
+    """
     total_window = tk.Toplevel(root)
     total_window.title("Resumo de Totais por Funcionário")
     total_window.geometry("800x550")
@@ -663,6 +836,18 @@ def exibir_resumo_totais(resumo_data):
 
 
 def salvar_planilha():
+    """
+    Salva os dados atuais do DataFrame em um arquivo Excel.
+
+    Cria uma aba "Consolidado" com todos os dados e abas individuais para cada
+    funcionário, incluindo um resumo de horas e valores no final de cada aba individual.
+    Exibe notificações de sucesso ou falha.
+
+    Side Effects:
+        Cria um arquivo Excel no local especificado pelo usuário.
+        Atualiza `lbl_status`.
+        Exibe `messagebox` de informação ou erro.
+    """
     global df
     if df.empty:
         messagebox.showinfo("Salvar", "Não há dados para salvar.")
@@ -720,6 +905,17 @@ def salvar_planilha():
         lbl_status.config(text="Operação de salvar cancelada.", fg="orange")
 
 def abrir_configuracoes():
+    """
+    Abre uma janela Toplevel para o usuário editar as configurações da aplicação.
+
+    Permite alterar horas normais de trabalho e multiplicador de hora extra.
+    As alterações são salvas em `config.json` e aplicadas ao DataFrame atual.
+
+    Side Effects:
+        Cria e mostra uma nova janela Toplevel.
+        Pode modificar `app_config`, `config.json`, e o DataFrame global `df`.
+        Pode chamar `save_config()`, `calcular_todas_horas_e_extras()`, `aplicar_filtros()`.
+    """
     config_window = tk.Toplevel(root)
     config_window.title("Configurações")
     config_window.geometry("480x280")
@@ -794,6 +990,18 @@ def abrir_configuracoes():
 
 
 def aplicar_filtros(event=None):
+    """
+    Aplica os filtros de ID, Nome e Área ao DataFrame global `df`
+    e atualiza a tabela na UI com os resultados filtrados.
+
+    Args:
+        event (tk.Event, optional): Evento do Tkinter (geralmente de um bind).
+                                   Não utilizado diretamente pela função, mas permite
+                                   que ela seja usada como callback de evento.
+    Side Effects:
+        Chama `atualizar_tabela()` com o DataFrame filtrado.
+        Atualiza `lbl_status`.
+    """
     if df.empty:
         atualizar_tabela()
         lbl_status.config(text="ℹ️ Nenhuma planilha carregada para filtrar.", foreground="blue")
@@ -827,6 +1035,14 @@ def aplicar_filtros(event=None):
 
 
 def limpar_filtros():
+    """
+    Limpa os campos de filtro da interface e reaplica os filtros (mostrando todos os dados).
+
+    Side Effects:
+        Modifica o texto dos widgets `entry_filtro_id`, `entry_filtro_nome`, `entry_filtro_area`.
+        Chama `aplicar_filtros()`.
+        Atualiza `lbl_status`.
+    """
     entry_filtro_id.delete(0, tk.END)
     entry_filtro_nome.delete(0, tk.END)
     entry_filtro_area.delete(0, tk.END)
@@ -835,7 +1051,16 @@ def limpar_filtros():
 
 
 def on_treeview_select(event=None):
-    """Chamado quando a seleção na Treeview muda."""
+    """
+    Callback para o evento de seleção na Treeview (tabela).
+    Atualiza o estado dos botões que dependem de uma seleção de linha.
+
+    Args:
+        event (tk.Event, optional): Evento do Tkinter. Não utilizado diretamente.
+
+    Side Effects:
+        Chama `update_button_states()`.
+    """
     update_button_states()
 
 
