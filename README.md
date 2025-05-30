@@ -29,14 +29,15 @@ A **Calculadora de Ponto e Horas Extras** é uma aplicação de desktop desenvol
     * As configurações são salvas em um arquivo `config.json`.
 * **Interface Gráfica Intuitiva:** Desenvolvida com Tkinter e `ttk` para uma melhor experiência do usuário.
 
-## Capturas de Tela (Opcional)
+## Capturas de Tela
 
-*Sugestão: Adicione aqui algumas capturas de tela da aplicação em funcionamento.*
-
-* `[Link ou Imagem da Tela Principal com Dados Carregados]`
-* `[Link ou Imagem da Janela de Resumo de Totais]`
-* `[Link ou Imagem da Janela de Configurações]`
-
+* `![image](https://github.com/user-attachments/assets/485b3c64-2608-47f3-aae7-7a19c08b71c1)`
+  
+* `![image](https://github.com/user-attachments/assets/609b78e1-5bad-422c-b569-d36062fb19f0)`
+  
+* `![image](https://github.com/user-attachments/assets/a0888c40-1353-4039-8f23-6d06c863296d)`
+  
+*`![image](https://github.com/user-attachments/assets/d16f982a-1793-4e94-9bba-cec808662b42)`
 ## Como Usar (Guia Rápido)
 
 1.  **Carregar Planilha:**
