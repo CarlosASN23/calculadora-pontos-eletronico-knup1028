@@ -6,6 +6,7 @@ import numpy as np
 import re
 import unicodedata
 import json
+from PIL import Image, ImageTk 
 
 # Definir o padrão de localização para português do Brasil
 try:
@@ -43,12 +44,13 @@ app_config = {
 }
 
 # Constantes para tratamento de valores nulos/especiais
-OMISSAO_VALS = ["Omissão", "nan", ""]
+OMISSAO_VALS = ["omissão", "omissao", "nan", ""] # Adicionado "omissão" em minúsculo
 ERRO_FORMATO = "INV_FORMATO"
 ERRO_SEQUENCIA = "INV_SEQ"
 HORA_ZERO = "00:00"
 
-# Carregar configurações
+# --- FUNÇÕES CORE (Lógica do Aplicativo - sem grandes alterações visuais aqui) ---
+
 def load_config():
     global app_config
     try:
@@ -68,7 +70,6 @@ def load_config():
         print(f"Erro inesperado ao carregar configurações: {e}. Usando configurações padrão.")
         save_config()
 
-# Salvar configurações
 def save_config():
     try:
         with open(CONFIG_FILE, "w") as f:
@@ -77,33 +78,47 @@ def save_config():
     except Exception as e:
         messagebox.showerror("Erro ao Salvar Configurações", f"Não foi possível salvar as configurações:\n{e}")
 
-# Função para selecionar o arquivo e processar os dados
+def update_button_states():
+    """Atualiza o estado dos botões com base no estado da aplicação."""
+    if df.empty:
+        btn_salvar.config(state="disabled")
+        btn_excluir_id.config(state="disabled")
+        btn_calcular_totais.config(state="disabled")
+        # Os botões de edição dependem da seleção na tabela, tratados em on_treeview_select
+    else:
+        btn_salvar.config(state="normal")
+        btn_excluir_id.config(state="normal")
+        btn_calcular_totais.config(state="normal")
+
+    # Estado dos botões de edição/seleção
+    if tabela.selection():
+        btn_editar.config(state="normal")
+        btn_remover_fds.config(state="normal")
+    else:
+        btn_editar.config(state="disabled")
+        btn_remover_fds.config(state="disabled")
+
+
 def selecionar_arquivo():
     global df
-
     root.config(cursor="watch")
     root.update_idletasks()
-
     file_path = filedialog.askopenfilename(title="Selecione a Planilha", filetypes=[("Excel Files", "*.xlsx;*.xls")])
+    root.config(cursor="")
 
     if file_path:
         try:
             df_raw = pd.read_excel(file_path, sheet_name=2)
-            df = df_raw.drop([0, 1, 2, 3]).reset_index(drop=True)
+            df = df_raw.iloc[4:].reset_index(drop=True)
 
-            # Apenas as colunas que REALMENTE vêm da planilha original
             novos_nomes_existentes = [
                 COL_ID, COL_NOME, COL_AREA, COL_DATA, COL_ENTRADA, COL_SAIDA_ALMOCO,
                 COL_VOLTA_ALMOCO, COL_SAIDA, COL_HORAS_DEVIDAS, COL_HORAS_EXTRAS,
                 COL_HORAS_NORMAIS, COL_NOTA
             ]
-            
-            # Garante que o número de colunas da lista novos_nomes_existentes não excede o número de colunas no DataFrame
-            if len(novos_nomes_existentes) > len(df.columns):
-                # Se a lista de nomes tem mais itens que colunas reais, ajusta
-                novos_nomes_existentes = novos_nomes_existentes[:len(df.columns)]
-                
-            df.columns = novos_nomes_existentes # Renomeia as colunas existentes
+            colunas_para_renomear = min(len(novos_nomes_existentes), len(df.columns))
+            df = df.iloc[:, :colunas_para_renomear]
+            df.columns = novos_nomes_existentes[:colunas_para_renomear]
 
             df[COL_ID] = df[COL_ID].astype(str)
             df[COL_DATA] = pd.to_datetime(df[COL_DATA], dayfirst=True, errors="coerce")
@@ -113,75 +128,38 @@ def selecionar_arquivo():
             minutos_normais_h = int((app_config["horas_normais_h"] * 60) % 60)
             df[COL_HORAS_NORMAIS] = f"{horas_normais_h_int:02}:{minutos_normais_h:02}"
 
-            # --- Adicionar e inicializar COLUNAS NOVAS AQUI ---
-            # Elas devem ser adicionadas após o DataFrame ser carregado e ter as colunas existentes renomeadas.
-            if COL_SALARIO_BASE not in df.columns:
-                df[COL_SALARIO_BASE] = np.nan # Inicializa com NaN
-                df[COL_SALARIO_BASE] = df[COL_SALARIO_BASE].astype(float) # Garante o tipo float
-            
-            if COL_VALOR_HORA_EXTRA not in df.columns:
-                df[COL_VALOR_HORA_EXTRA] = np.nan # Inicializa com NaN
-                df[COL_VALOR_HORA_EXTRA] = df[COL_VALOR_HORA_EXTRA].astype(float) # Garante o tipo float
-            # --- FIM DA MUDANÇA CRÍTICA ---
-
-            # Definir a ordem final das colunas, incluindo as recém-criadas
             ordem_colunas = [
                 COL_ID, COL_NOME, COL_AREA, COL_DATA, COL_SEMANA, COL_ENTRADA,
                 COL_SAIDA_ALMOCO, COL_VOLTA_ALMOCO, COL_SAIDA, COL_HORAS_DEVIDAS,
                 COL_HORAS_EXTRAS, COL_HORAS_NORMAIS, COL_SALARIO_BASE,
                 COL_VALOR_HORA_EXTRA, COL_NOTA
             ]
-            df = df[ordem_colunas] # Reorganiza as colunas
-
+            for col in ordem_colunas:
+                if col not in df.columns:
+                    if col in [COL_SALARIO_BASE, COL_VALOR_HORA_EXTRA]:
+                         df[col] = np.nan
+                         df[col] = df[col].astype(float)
+                    else:
+                        df[col] = ""
+            df = df[ordem_colunas]
             df[COL_NOTA] = df[COL_NOTA].fillna("")
-            df.replace("Omissão", "", inplace=True) # Manter para outras colunas de tempo ou nota
+            df.replace("Omissão", "", inplace=True, regex=True) # regex=True para case-insensitive "Omissão"
 
-            calcular_todas_horas_e_extras() # Calcula as horas para todo o DataFrame carregado
-            atualizar_tabela()
-            lbl_status.config(text="Planilha carregada e ajustada com sucesso!", fg="green")
+            calcular_todas_horas_e_extras()
+            aplicar_filtros()
+            lbl_status.config(text=f"✅ Sucesso: Planilha '{file_path.split('/')[-1]}' carregada!", foreground="green")
         except Exception as e:
-            lbl_status.config(text=f"Erro ao carregar ou processar a planilha: {e}", fg="red")
+            df = pd.DataFrame() # Limpa o DataFrame em caso de erro
+            aplicar_filtros() # Atualiza a tabela para mostrar que está vazia
+            lbl_status.config(text=f"❌ Erro ao carregar planilha: {e}", foreground="red")
             messagebox.showerror("Erro de Leitura", f"Ocorreu um erro: {e}")
         finally:
-            root.config(cursor="")
+            update_button_states()
     else:
-        root.config(cursor="")
-        lbl_status.config(text="Seleção de arquivo cancelada.", fg="orange")
+        lbl_status.config(text="ℹ️ Seleção de arquivo cancelada.", foreground="darkorange")
+        update_button_states()
 
 
-def excluir_funcionario_por_id():
-    global df
-    if df.empty:
-        messagebox.showinfo("Informação", "Nenhuma planilha carregada.")
-        return
-
-    ids_para_excluir = simpledialog.askstring("Excluir Funcionário", "Digite os IDs a serem removidos separados por vírgula:")
-
-    if ids_para_excluir:
-        ids_lista = [id_str.strip() for id_str in ids_para_excluir.split(",")]
-        ids_existentes_no_df = df[COL_ID].unique()
-        ids_a_remover = [id_str for id_str in ids_lista if id_str in ids_existentes_no_df]
-        ids_nao_encontrados = [id_str for id_str in ids_lista if id_str not in ids_existentes_no_df]
-
-        if not ids_a_remover:
-            lbl_status.config(text="Nenhum ID válido encontrado para remoção.", fg="orange")
-            if ids_nao_encontrados:
-                messagebox.showwarning("Aviso", f"Os seguintes IDs não foram encontrados na planilha e não foram removidos: {', '.join(ids_nao_encontrados)}")
-            return
-
-        confirmar = messagebox.askyesno("Confirmar Exclusão", f"Tem certeza que deseja remover todos os registros dos IDs: {', '.join(ids_a_remover)}?")
-        if confirmar:
-            df = df[~df[COL_ID].isin(ids_a_remover)].reset_index(drop=True)
-            aplicar_filtros() # Atualiza a tabela com os filtros aplicados
-            lbl_status.config(text=f"Funcionários removidos: {', '.join(ids_a_remover)}", fg="green")
-            if ids_nao_encontrados:
-                messagebox.showwarning("Aviso", f"Os seguintes IDs não foram encontrados na planilha e, portanto, não removidos: {', '.join(ids_nao_encontrados)}")
-        else:
-            lbl_status.config(text="Operação de exclusão cancelada.", fg="orange")
-    else:
-        lbl_status.config(text="Operação de exclusão cancelada.", fg="orange")
-
-# Helper function to calculate hours for a single row
 def _calculate_single_row_hours(row):
     horas_normais_h_config = app_config["horas_normais_h"]
     multiplicador = app_config["multiplicador_hora_extra"]
@@ -191,15 +169,15 @@ def _calculate_single_row_hours(row):
     volta_almoco_str = str(row[COL_VOLTA_ALMOCO]).strip()
     saida_final_str = str(row[COL_SAIDA]).strip()
 
-    # Normalize "Omissão", "nan", and empty strings to empty strings for consistent parsing
-    entrada_str = "" if entrada_str in OMISSAO_VALS else entrada_str
-    saida_almoco_str = "" if saida_almoco_str in OMISSAO_VALS else saida_almoco_str
-    volta_almoco_str = "" if volta_almoco_str in OMISSAO_VALS else volta_almoco_str
-    saida_final_str = "" if saida_final_str in OMISSAO_VALS else saida_final_str
-
+    # Normalização mais robusta para omissão e nan
+    entrada_str = "" if entrada_str.lower() in OMISSAO_VALS or entrada_str.lower() == 'nan' else entrada_str
+    saida_almoco_str = "" if saida_almoco_str.lower() in OMISSAO_VALS or saida_almoco_str.lower() == 'nan' else saida_almoco_str
+    volta_almoco_str = "" if volta_almoco_str.lower() in OMISSAO_VALS or volta_almoco_str.lower() == 'nan' else volta_almoco_str
+    saida_final_str = "" if saida_final_str.lower() in OMISSAO_VALS or saida_final_str.lower() == 'nan' else saida_final_str
+    
+    nota_final = str(row[COL_NOTA]) if pd.notna(row[COL_NOTA]) else ""
     horas_devidas_output = ""
     horas_extras_output = ""
-    nota_adicional = ""
     valor_hora_extra_output = 0.0
 
     try:
@@ -210,228 +188,203 @@ def _calculate_single_row_hours(row):
     except ValueError:
         horas_devidas_output = ERRO_FORMATO
         horas_extras_output = ERRO_FORMATO
-        nota_adicional = "Erro: Formato de horário inválido."
+        nota_final = f"{nota_final} (Erro: Formato de horário inválido)".strip()
         return pd.Series({
-            COL_HORAS_DEVIDAS: horas_devidas_output,
-            COL_HORAS_EXTRAS: horas_extras_output,
-            COL_NOTA: f"{row[COL_NOTA]} {nota_adicional}".strip() if row[COL_NOTA] else nota_adicional,
-            COL_VALOR_HORA_EXTRA: valor_hora_extra_output
+            COL_HORAS_DEVIDAS: horas_devidas_output, COL_HORAS_EXTRAS: horas_extras_output,
+            COL_NOTA: nota_final, COL_VALOR_HORA_EXTRA: valor_hora_extra_output
         })
 
     total_trabalhado_s = 0
-
-    # Case 1: No lunch break, or lunch times explicitly 00:00 (treated as no break)
+    # CASO 1: Sem almoço OU almoço zerado (00:00)
     if pd.notna(entrada_dt) and pd.notna(saida_final_dt) and \
        ((pd.isna(saida_almoco_dt) and pd.isna(volta_almoco_dt)) or \
         (saida_almoco_str == HORA_ZERO and volta_almoco_str == HORA_ZERO)):
         
-        # If all fields are 00:00, consider no record for the day
         if entrada_str == HORA_ZERO and saida_final_str == HORA_ZERO and \
-           saida_almoco_str == HORA_ZERO and volta_almoco_str == HORA_ZERO:
+           (saida_almoco_str == HORA_ZERO or saida_almoco_str == "") and \
+           (volta_almoco_str == HORA_ZERO or volta_almoco_str == ""):
             return pd.Series({
-                COL_HORAS_DEVIDAS: "",
-                COL_HORAS_EXTRAS: "",
-                COL_NOTA: row[COL_NOTA],
-                COL_VALOR_HORA_EXTRA: 0.0
+                COL_HORAS_DEVIDAS: "", COL_HORAS_EXTRAS: "",
+                COL_NOTA: nota_final, COL_VALOR_HORA_EXTRA: 0.0
             })
 
-        # Adjust saida_final_dt for overnight shifts
-        if saida_final_dt < entrada_dt:
-            saida_final_dt += pd.Timedelta(days=1)
+        if saida_final_dt < entrada_dt: saida_final_dt += pd.Timedelta(days=1)
         
         if entrada_dt >= saida_final_dt:
             horas_devidas_output = ERRO_SEQUENCIA
             horas_extras_output = ERRO_SEQUENCIA
-            nota_adicional = "Erro: Entrada >= Saída. Horários sequenciais incorretos."
-            return pd.Series({
-                COL_HORAS_DEVIDAS: horas_devidas_output,
-                COL_HORAS_EXTRAS: horas_extras_output,
-                COL_NOTA: f"{row[COL_NOTA]} {nota_adicional}".strip() if row[COL_NOTA] else nota_adicional,
-                COL_VALOR_HORA_EXTRA: valor_hora_extra_output
-            })
-        
-        total_trabalhado_s = (saida_final_dt - entrada_dt).total_seconds()
+            nota_final = f"{nota_final} (Erro Seq: E>=S s/almoço)".strip()
+        else:
+            total_trabalhado_s = (saida_final_dt - entrada_dt).total_seconds()
             
-    # Case 2: With lunch break
+    # CASO 2: Com almoço
     elif pd.notna(entrada_dt) and pd.notna(saida_almoco_dt) and pd.notna(volta_almoco_dt) and pd.notna(saida_final_dt):
-        # Adjust for overnight shifts
         if saida_almoco_dt < entrada_dt: saida_almoco_dt += pd.Timedelta(days=1)
-        if volta_almoco_dt < saida_almoco_dt: volta_almoco_dt += pd.Timedelta(days=1)
-        if saida_final_dt < volta_almoco_dt: saida_final_dt += pd.Timedelta(days=1)
+        if volta_almoco_dt < saida_almoco_dt: volta_almoco_dt += pd.Timedelta(days=1) # Volta pode ser no dia seguinte
+        if saida_final_dt < volta_almoco_dt: saida_final_dt += pd.Timedelta(days=1) # Saída pode ser no dia seguinte
 
-        if not (entrada_dt < saida_almoco_dt and saida_almoco_dt < volta_almoco_dt and volta_almoco_dt < saida_final_dt):
+        # Permitir almoço de duração zero (SaidaAlmoco == VoltaAlmoco)
+        if not (entrada_dt <= saida_almoco_dt and saida_almoco_dt <= volta_almoco_dt and volta_almoco_dt <= saida_final_dt and entrada_dt < saida_final_dt):
             horas_devidas_output = ERRO_SEQUENCIA
             horas_extras_output = ERRO_SEQUENCIA
-            nota_adicional = "Erro: Sequência de horários incorreta."
-            return pd.Series({
-                COL_HORAS_DEVIDAS: horas_devidas_output,
-                COL_HORAS_EXTRAS: horas_extras_output,
-                COL_NOTA: f"{row[COL_NOTA]} {nota_adicional}".strip() if row[COL_NOTA] else nota_adicional,
-                COL_VALOR_HORA_EXTRA: valor_hora_extra_output
-            })
-
-        periodo_manha_s = (saida_almoco_dt - entrada_dt).total_seconds()
-        periodo_tarde_s = (saida_final_dt - volta_almoco_dt).total_seconds()
-        total_trabalhado_s = periodo_manha_s + periodo_tarde_s
+            nota_final = f"{nota_final} (Erro Seq: c/almoço)".strip()
+        else:
+            periodo_manha_s = (saida_almoco_dt - entrada_dt).total_seconds()
+            periodo_tarde_s = (saida_final_dt - volta_almoco_dt).total_seconds()
+            total_trabalhado_s = periodo_manha_s + periodo_tarde_s
+    # CASO 3: Horários incompletos para cálculo
     else:
-        # Horários incompletos ou inválidos para cálculo
-        nota_adicional = "Horários incompletos para cálculo."
+        if any(s for s in [entrada_str, saida_almoco_str, volta_almoco_str, saida_final_str]): # Se algum campo foi preenchido
+             nota_final = f"{nota_final} (Horários incompletos)".strip()
+        # Se todos os campos de horário estiverem vazios, considera-se ausência, sem nota adicional aqui.
         return pd.Series({
-            COL_HORAS_DEVIDAS: "",
-            COL_HORAS_EXTRAS: "",
-            COL_NOTA: f"{row[COL_NOTA]} {nota_adicional}".strip() if row[COL_NOTA] else nota_adicional,
-            COL_VALOR_HORA_EXTRA: valor_hora_extra_output
+            COL_HORAS_DEVIDAS: "", COL_HORAS_EXTRAS: "",
+            COL_NOTA: nota_final, COL_VALOR_HORA_EXTRA: 0.0
         })
-            
-    total_trabalhado_h = total_trabalhado_s / 3600
 
-    if total_trabalhado_h < horas_normais_h_config:
-        diff_total_s = (horas_normais_h_config - total_trabalhado_h) * 3600
-        horas = int(diff_total_s // 3600)
-        minutos = int((diff_total_s % 3600) // 60)
-        horas_devidas_output = f"{horas:02}:{minutos:02}"
-        horas_extras_output = HORA_ZERO
-    else:
-        diff_total_s = (total_trabalhado_h - horas_normais_h_config) * 3600
-        horas = int(diff_total_s // 3600)
-        minutos = int((diff_total_s % 3600) // 60)
-        horas_devidas_output = HORA_ZERO
-        horas_extras_output = f"{horas:02}:{minutos:02}"
+    # Se já houve erro de sequência, retorna
+    if horas_devidas_output == ERRO_SEQUENCIA:
+         return pd.Series({
+            COL_HORAS_DEVIDAS: horas_devidas_output, COL_HORAS_EXTRAS: horas_extras_output,
+            COL_NOTA: nota_final, COL_VALOR_HORA_EXTRA: 0.0
+        })
+
+    # Cálculo de horas devidas/extras
+    if total_trabalhado_s > 0: # Só calcula se houve tempo trabalhado válido
+        total_trabalhado_h = total_trabalhado_s / 3600.0
+        diff_total_s = total_trabalhado_s - (horas_normais_h_config * 3600.0)
+
+        if diff_total_s < -1: # Deu horas a menos (considera uma pequena margem para arredondamento)
+            segundos_devidos = abs(diff_total_s)
+            horas_dev = int(segundos_devidos // 3600)
+            minutos_dev = int((segundos_devidos % 3600) // 60)
+            horas_devidas_output = f"{horas_dev:02}:{minutos_dev:02}"
+            horas_extras_output = HORA_ZERO
+        else: # Cumpriu ou fez horas extras
+            segundos_extras = diff_total_s if diff_total_s > 0 else 0
+            horas_ext = int(segundos_extras // 3600)
+            minutos_ext = int((segundos_extras % 3600) // 60)
+            horas_extras_output = f"{horas_ext:02}:{minutos_ext:02}"
+            horas_devidas_output = HORA_ZERO
+    # Se total_trabalhado_s == 0 e não houve erro de formatação ou sequência, não faz nada (ausência)
+    elif total_trabalhado_s == 0 and not horas_devidas_output and not horas_extras_output:
+        pass # Mantém horas devidas/extras como ""
+
+    # Cálculo do valor da hora extra
+    salario_base_val = row[COL_SALARIO_BASE] # Já deve ser float ou NaN
+    if pd.notna(salario_base_val) and salario_base_val > 0 and \
+       horas_extras_output and horas_extras_output != HORA_ZERO and \
+       horas_extras_output not in [ERRO_FORMATO, ERRO_SEQUENCIA] and ":" in horas_extras_output:
+        try:
+            valor_hora = salario_base_val / 220.0 # Carga horária mensal padrão CLT
+            h_extra, m_extra = map(int, horas_extras_output.split(':'))
+            horas_extras_dec = h_extra + (m_extra / 60.0)
+            valor_hora_extra_output = round(valor_hora * multiplicador * horas_extras_dec, 2)
+        except ValueError:
+            valor_hora_extra_output = 0.0 
+            nota_final = f"{nota_final} (Erro calc. Vlr HE)".strip()
     
-    # Calculate extra hour value for the current row
-    salario_base_val = row[COL_SALARIO_BASE]
-    if pd.notna(salario_base_val) and salario_base_val > 0 and horas_extras_output and \
-       horas_extras_output not in [HORA_ZERO, ERRO_FORMATO, ERRO_SEQUENCIA] and ":" in horas_extras_output:
-        valor_hora = salario_base_val / 220
-        horas_extras_parts = horas_extras_output.split(":")
-        horas_extras_dec = int(horas_extras_parts[0]) + (int(horas_extras_parts[1]) / 60)
-        valor_hora_extra_output = round(valor_hora * multiplicador * horas_extras_dec, 2)
-    else:
-        valor_hora_extra_output = 0.0
-
     return pd.Series({
         COL_HORAS_DEVIDAS: horas_devidas_output,
         COL_HORAS_EXTRAS: horas_extras_output,
-        COL_NOTA: row[COL_NOTA], # Keep original note unless specific error
+        COL_NOTA: nota_final,
         COL_VALOR_HORA_EXTRA: valor_hora_extra_output
     })
 
-# Main function to calculate hours for the entire DataFrame
 def calcular_todas_horas_e_extras():
     global df
-    if df.empty:
-        return
+    if df.empty: return
 
-    # Apply the single-row calculation function to all rows
-    # This will update COL_HORAS_DEVIDAS, COL_HORAS_EXTRAS, COL_VALOR_HORA_EXTRA, and potentially COL_NOTA
-    df_calculated_cols = df.apply(_calculate_single_row_hours, axis=1)
+    cols_horarios = [COL_ENTRADA, COL_SAIDA_ALMOCO, COL_VOLTA_ALMOCO, COL_SAIDA]
+    for col in cols_horarios:
+        if col not in df.columns: df[col] = ""
+        df[col] = df[col].astype(str).fillna("")
 
-    # Update the original DataFrame with the calculated values
-    df[COL_HORAS_DEVIDAS] = df_calculated_cols[COL_HORAS_DEVIDAS]
-    df[COL_HORAS_EXTRAS] = df_calculated_cols[COL_HORAS_EXTRAS]
-    df[COL_VALOR_HORA_EXTRA] = df_calculated_cols[COL_VALOR_HORA_EXTRA]
-    # Merge notes: if a new note was generated by calculation, append it
-    df[COL_NOTA] = df_calculated_cols.apply(
-        lambda row: f"{df.loc[row.name, COL_NOTA]} {row[COL_NOTA]}".strip()
-        if (df.loc[row.name, COL_NOTA] and row[COL_NOTA] and df.loc[row.name, COL_NOTA] != row[COL_NOTA])
-        else row[COL_NOTA] if row[COL_NOTA] else df.loc[row.name, COL_NOTA],
-        axis=1
-    )
-    # The above COL_NOTA logic can be tricky to get right for all cases.
-    # A simpler approach might be to just overwrite the note if the calculation generates one,
-    # or ensure _calculate_single_row_hours manages the full note string correctly.
-    # For now, if _calculate_single_row_hours returns a new note, it will replace the old one.
-    # The previous code was: df_temp.at[i, COL_NOTA] = f"{df_temp.at[i, COL_NOTA]} {nota_adicional}".strip() if df_temp.at[i, COL_NOTA] else nota_adicional
-    # This means the single row calculation is already managing the merge, so we just need to assign.
-    # Let's adjust _calculate_single_row_hours to directly return the updated note.
+    if COL_NOTA not in df.columns: df[COL_NOTA] = ""
+    df[COL_NOTA] = df[COL_NOTA].astype(str).fillna("")
 
-    # Re-running the note update to avoid complex merge logic here,
-    # assuming _calculate_single_row_hours handles note appending.
-    df[COL_NOTA] = df_calculated_cols[COL_NOTA]
+    if COL_SALARIO_BASE not in df.columns: df[COL_SALARIO_BASE] = np.nan
+    df[COL_SALARIO_BASE] = pd.to_numeric(df[COL_SALARIO_BASE], errors='coerce')
+    
+    # Garantir que COL_VALOR_HORA_EXTRA exista antes de ser preenchida
+    if COL_VALOR_HORA_EXTRA not in df.columns: df[COL_VALOR_HORA_EXTRA] = np.nan
+    df[COL_VALOR_HORA_EXTRA] = pd.to_numeric(df[COL_VALOR_HORA_EXTRA], errors='coerce')
+
+
+    calculated_data = df.apply(_calculate_single_row_hours, axis=1)
+    df[[COL_HORAS_DEVIDAS, COL_HORAS_EXTRAS, COL_NOTA, COL_VALOR_HORA_EXTRA]] = calculated_data
 
 
 def atualizar_tabela(data_frame_exibir=None):
     current_df = data_frame_exibir if data_frame_exibir is not None else df.copy()
-
-    if current_df.empty:
-        for item_view in tabela.get_children():
-            tabela.delete(item_view)
-        lbl_status.config(text="Nenhum dado para exibir na tabela.", fg="orange")
-        tabela["columns"] = []
-        return
-
-    # No need to recalculate all hours here if apply_filters calls calcular_todas_horas_e_extras already
-    # or if the single row edit calls it. The goal is to avoid redundant full recalculations.
-    # If data_frame_exibir is None, it means we're showing the full, possibly updated, df.
-    # If it's a filtered df, calculations should have already happened on the original df.
-    
-    # We still need to calculate extra hour value here for the *displayed* DataFrame,
-    # because the base df might have just been loaded or filtered, and the
-    # COL_VALOR_HORA_EXTRA depends on COL_HORAS_EXTRAS and COL_SALARIO_BASE,
-    # and COL_SALARIO_BASE can be edited.
-    # However, since _calculate_single_row_hours already calculates COL_VALOR_HORA_EXTRA,
-    # and calcular_todas_horas_e_extras uses it, this block below is redundant if
-    # `calcular_todas_horas_e_extras` is called on full df and `_calculate_single_row_hours`
-    # handles all dependent calculations.
-
-    # This part was for calculating COL_VALOR_HORA_EXTRA if it wasn't done yet,
-    # but now it's integrated into _calculate_single_row_hours.
-    # Removing this loop to avoid recalculating already calculated values.
-    # The assumption is that `df` (the global one) is always up-to-date with calculations.
-    # `data_frame_exibir` is just a view of `df`.
-
     for item_view in tabela.get_children():
         tabela.delete(item_view)
+
+    if current_df.empty:
+        tabela["columns"] = []
+        # lbl_status já é atualizado por aplicar_filtros se df_filtrado for vazio
+        return
 
     tabela["columns"] = list(current_df.columns)
     tabela["show"] = "headings"
 
+    col_widths = {
+        COL_ID: 60, COL_NOME: 220, COL_AREA: 120, COL_DATA: 90, COL_SEMANA: 100,
+        COL_ENTRADA: 70, COL_SAIDA_ALMOCO: 70, COL_VOLTA_ALMOCO: 70, COL_SAIDA: 70,
+        COL_HORAS_DEVIDAS: 70, COL_HORAS_EXTRAS: 70, COL_HORAS_NORMAIS: 70,
+        COL_SALARIO_BASE: 100, COL_VALOR_HORA_EXTRA: 110, COL_NOTA: 250
+    }
+    col_anchors = {
+        COL_SALARIO_BASE: "e", COL_VALOR_HORA_EXTRA: "e",
+        COL_ID: "center", COL_DATA: "center", COL_ENTRADA: "center", COL_SAIDA_ALMOCO: "center",
+        COL_VOLTA_ALMOCO: "center", COL_SAIDA: "center", COL_HORAS_DEVIDAS: "center",
+        COL_HORAS_EXTRAS: "center", COL_HORAS_NORMAIS: "center"
+    }
+
     for col in current_df.columns:
-        tabela.column(col, anchor="center", width=120)
+        width = col_widths.get(col, 100)
+        anchor = col_anchors.get(col, "w") # Default anchor "w" (west/esquerda)
+        tabela.column(col, anchor=anchor, width=width, minwidth=40)
         tabela.heading(col, text=col)
 
     for index, row in current_df.iterrows():
         formatted_values = []
         for col_name, val in row.items():
-            if pd.isna(val) or val == "":
+            if pd.isna(val) or str(val).strip() == "":
                 formatted_values.append("")
             elif isinstance(val, float) and (col_name == COL_SALARIO_BASE or col_name == COL_VALOR_HORA_EXTRA):
-                formatted_values.append(f"{val:.2f}".replace('.', ','))
+                try:
+                    formatted_values.append(locale.format_string("%.2f", val, grouping=True))
+                except (TypeError, ValueError):
+                    formatted_values.append(str(val))
             elif isinstance(val, pd.Timestamp):
                 formatted_values.append(val.strftime('%d/%m/%Y'))
             else:
                 formatted_values.append(str(val))
         tabela.insert("", "end", iid=index, values=formatted_values)
+    update_button_states() # Atualiza botões após popular a tabela
 
 
 def editar_celula():
     global df
-    if df.empty:
-        messagebox.showinfo("Informação", "Nenhuma planilha carregada para editar.")
+    if df.empty or not tabela.selection():
+        messagebox.showwarning("Aviso", "Nenhuma planilha carregada ou nenhuma linha selecionada para edição.")
         return
 
-    item_selecionado = tabela.selection()
-    if not item_selecionado:
-        lbl_status.config(text="Nenhuma linha selecionada para edição.", fg="orange")
+    item_selecionado = tabela.selection()[0]
+    indice_df_original = int(item_selecionado)
+
+    if indice_df_original not in df.index:
+        messagebox.showerror("Erro Crítico", "Índice da linha selecionada não encontrado no DataFrame. Sincronia perdida.")
         return
 
-    # The iid of the Treeview corresponds to the actual index of the global DataFrame
-    # This is crucial for editing when filters are active
-    indice_df = int(item_selecionado[0]) 
-    
-    # Ensure the index still exists in the global DataFrame
-    if indice_df not in df.index:
-        messagebox.showwarning("Aviso", "A linha selecionada não existe mais no conjunto de dados original (pode ter sido filtrada ou excluída).")
-        aplicar_filtros() # Reload table to show current data
-        return
+    colunas_treeview = list(df.columns)
+    col_options_str = "\n".join([f"{i+1}. {col}" for i, col in enumerate(colunas_treeview)])
+    coluna_idx_str = simpledialog.askstring("Selecionar Coluna para Editar",
+                                            f"Linha (Índice DF: {indice_df_original})\nDigite o nº da coluna para editar (1 a {len(colunas_treeview)}):\n\n{col_options_str}")
 
-    colunas_treeview = tabela["columns"]
-
-    coluna_idx_str = simpledialog.askstring("Selecionar Coluna",
-                                            "Digite o número da coluna para editar (começando em 1):\n" +
-                                            "\n".join([f"{i+1}. {col}" for i, col in enumerate(colunas_treeview)]))
     if not coluna_idx_str:
-        lbl_status.config(text="Edição cancelada.", fg="orange")
+        lbl_status.config(text="ℹ️ Edição cancelada.", foreground="blue")
         return
 
     try:
@@ -444,259 +397,270 @@ def editar_celula():
         messagebox.showerror("Erro", "Entrada inválida para número da coluna.")
         return
 
-    current_value = df.at[indice_df, coluna_para_editar]
+    valor_atual_df = df.loc[indice_df_original, coluna_para_editar]
+    display_valor_atual = str(valor_atual_df) if pd.notna(valor_atual_df) else ""
+    
+    novo_valor_str = simpledialog.askstring(f"Editar: {coluna_para_editar}", 
+                                       f"Linha (Índice DF: {indice_df_original}), Coluna: '{coluna_para_editar}'\nValor Atual: {display_valor_atual}\n\nNovo valor:")
+
+    if novo_valor_str is None:
+        lbl_status.config(text="ℹ️ Edição cancelada.", foreground="blue")
+        return
+
+    novo_valor_strip = novo_valor_str.strip()
     mudancas_feitas = False
 
-    if coluna_para_editar == COL_NOTA:
-        display_value_nota = "" if pd.isna(current_value) else str(current_value)
-        novo_valor = simpledialog.askstring("Editar Nota", f"Digite a nova anotação para '{COL_NOTA}' (Atual: {display_value_nota}):")
-        if novo_valor is not None:
-            df.at[indice_df, COL_NOTA] = novo_valor.strip()
+    # --- Lógica de edição por coluna ---
+    if coluna_para_editar in [COL_ENTRADA, COL_SAIDA_ALMOCO, COL_VOLTA_ALMOCO, COL_SAIDA]:
+        if novo_valor_strip == "":
+            df.loc[indice_df_original, coluna_para_editar] = ""
             mudancas_feitas = True
-
-    # Lógica para COL_SALARIO_BASE (editável se vazio, com validação)
-    elif coluna_para_editar == COL_SALARIO_BASE:
-        # Considera 0.0, np.nan ou None como "vazio" para edição
-        is_empty_salario = pd.isna(current_value) or (isinstance(current_value, (float, int)) and current_value == 0.0) 
-        if is_empty_salario:
-            while True:
-                novo_valor_str = simpledialog.askstring("Editar Salário Base", f"Digite o novo valor para {COL_SALARIO_BASE} (deixe em branco para limpar):")
-                if novo_valor_str is None:
-                    break  # Cancelou
-
-                novo_valor_strip = novo_valor_str.strip().replace(",", ".")
-                if novo_valor_strip == "":
-                    # Preencher todas as células 'Salário Base' vazias para este funcionário com NaN
-                    # Ensure COL_ID is present for this logic
-                    if COL_ID in df.columns:
-                        id_funcionario_selecionado = df.at[indice_df, COL_ID]
-                        df.loc[(df[COL_ID] == id_funcionario_selecionado) & (df[COL_SALARIO_BASE].isna() | (df[COL_SALARIO_BASE] == 0.0)), COL_SALARIO_BASE] = np.nan
-                    else: # Fallback if COL_ID somehow missing, just update the single cell
-                         df.at[indice_df, COL_SALARIO_BASE] = np.nan
-                    mudancas_feitas = True
-                    break
-
-                try:
-                    float_value = float(novo_valor_strip)
-                    if float_value < 0:
-                        messagebox.showerror("Erro de Entrada", "Salário Base não pode ser negativo.")
-                        continue
-                    
-                    # Preencher todas as células 'Salário Base' vazias para este funcionário
-                    if COL_ID in df.columns:
-                        id_funcionario_selecionado = df.at[indice_df, COL_ID]
-                        # Apply to all rows for this employee that have empty/0 salary
-                        df.loc[(df[COL_ID] == id_funcionario_selecionado) & (df[COL_SALARIO_BASE].isna() | (df[COL_SALARIO_BASE] == 0.0)), COL_SALARIO_BASE] = float_value
-                    else: # Fallback if COL_ID somehow missing, just update the single cell
-                        df.at[indice_df, COL_SALARIO_BASE] = float_value
-                    
-                    mudancas_feitas = True
-                    break
-                except ValueError:
-                    messagebox.showerror("Erro de Entrada", "Valor inválido para Salário Base. Insira um número (ex: 1500.50).")
-
-        else:
-            messagebox.showinfo("Informação", f"A coluna '{COL_SALARIO_BASE}' já está preenchida e não pode ser editada por aqui. Para alterar, edite a planilha original ou use outra funcionalidade se disponível.")
-
-    elif coluna_para_editar in [COL_ENTRADA, COL_SAIDA_ALMOCO, COL_VOLTA_ALMOCO, COL_SAIDA]:
-        time_pattern = re.compile(r"^\d{1,2}:\d{2}$")
-        display_value_time = str(current_value) if pd.notna(current_value) and str(current_value).strip() not in OMISSAO_VALS else ""
-
-        while True:
-            novo_valor_str = simpledialog.askstring(f"Editar {coluna_para_editar}", f"Digite o novo valor para {coluna_para_editar} (Atual: {display_value_time}, formato HH:MM, deixe em branco para limpar):")
-            if novo_valor_str is None: break
-
-            novo_valor_strip = novo_valor_str.strip()
-            if novo_valor_strip == "":
-                df.at[indice_df, coluna_para_editar] = ""
+        elif re.fullmatch(r"\d{1,2}:\d{2}", novo_valor_strip):
+            h, m = map(int, novo_valor_strip.split(':'))
+            if 0 <= h <= 23 and 0 <= m <= 59:
+                df.loc[indice_df_original, coluna_para_editar] = f"{h:02}:{m:02}"
                 mudancas_feitas = True
-                break
-            if time_pattern.match(novo_valor_strip):
-                try:
-                    h_str, m_str = novo_valor_strip.split(':')
-                    h, m = int(h_str), int(m_str)
-                    if not (0 <= h <= 23 and 0 <= m <= 59):
-                        raise ValueError("Hora ou minuto fora do intervalo válido.")
-                    df.at[indice_df, coluna_para_editar] = f"{h:02}:{m:02}"
+            else: messagebox.showerror("Erro", "Hora/minuto inválido.")
+        else: messagebox.showerror("Erro", f"Formato para {coluna_para_editar} deve ser HH:MM ou vazio.")
+
+    elif coluna_para_editar == COL_SALARIO_BASE:
+        if novo_valor_strip == "":
+            df.loc[indice_df_original, COL_SALARIO_BASE] = np.nan
+            mudancas_feitas = True
+        else:
+            try:
+                val_float = float(novo_valor_strip.replace(",", "."))
+                if val_float < 0: messagebox.showerror("Erro", "Salário não pode ser negativo.")
+                else:
+                    id_func = df.loc[indice_df_original, COL_ID]
+                    df.loc[df[COL_ID] == id_func, COL_SALARIO_BASE] = val_float
                     mudancas_feitas = True
-                    break
-                except ValueError as e:
-                    messagebox.showerror("Erro de Entrada", f"Valor de tempo inválido: {e}. Use HH:MM (ex: 08:00, 23:59).")
-            else:
-                messagebox.showerror("Erro de Formato", f"Formato inválido para {coluna_para_editar}. Use HH:MM (ex: 08:00).")
+            except ValueError: messagebox.showerror("Erro", "Salário inválido.")
+
+    elif coluna_para_editar == COL_NOTA:
+        df.loc[indice_df_original, COL_NOTA] = novo_valor_strip
+        mudancas_feitas = True
+    
+    # Adicione outras colunas editáveis aqui (ID, Nome, Área, Data)
+    elif coluna_para_editar == COL_ID:
+        if novo_valor_strip: 
+            df.loc[indice_df_original, COL_ID] = novo_valor_strip
+            mudancas_feitas = True
+        else: messagebox.showerror("Erro", "ID não pode ser vazio.")
+
+    elif coluna_para_editar == COL_NOME:
+        if novo_valor_strip:
+            df.loc[indice_df_original, COL_NOME] = novo_valor_strip
+            mudancas_feitas = True
+        else: messagebox.showerror("Erro", "Nome não pode ser vazio.")
+    
+    elif coluna_para_editar == COL_AREA:
+        df.loc[indice_df_original, COL_AREA] = novo_valor_strip
+        mudancas_feitas = True
+
+    elif coluna_para_editar == COL_DATA:
+        if novo_valor_strip == "":
+            df.loc[indice_df_original, COL_DATA] = pd.NaT
+            mudancas_feitas = True
+        else:
+            try:
+                nova_data = pd.to_datetime(novo_valor_strip, dayfirst=True, errors='raise')
+                df.loc[indice_df_original, COL_DATA] = nova_data
+                df.loc[indice_df_original, COL_SEMANA] = nova_data.strftime("%A").str.capitalize()
+                mudancas_feitas = True
+            except ValueError: messagebox.showerror("Erro", "Formato de data inválido. Use DD/MM/AAAA.")
     else:
-        messagebox.showinfo("Informação", f"A coluna '{coluna_para_editar}' não é editável diretamente por aqui. Considere editar a planilha original se necessário.")
+        messagebox.showinfo("Informação", f"Coluna '{coluna_para_editar}' não é diretamente editável ou não possui lógica de edição definida.")
 
     if mudancas_feitas:
-        # Recalculate only the affected row after edit
-        updated_row_series = _calculate_single_row_hours(df.loc[indice_df])
-        for col_to_update in [COL_HORAS_DEVIDAS, COL_HORAS_EXTRAS, COL_VALOR_HORA_EXTRA, COL_NOTA]:
-            df.at[indice_df, col_to_update] = updated_row_series[col_to_update]
+        if coluna_para_editar in [COL_ENTRADA, COL_SAIDA_ALMOCO, COL_VOLTA_ALMOCO, COL_SAIDA, COL_SALARIO_BASE, COL_DATA]:
+            # Recalcular a linha modificada
+             updated_row_series = _calculate_single_row_hours(df.loc[indice_df_original])
+             df.loc[indice_df_original, [COL_HORAS_DEVIDAS, COL_HORAS_EXTRAS, COL_NOTA, COL_VALOR_HORA_EXTRA]] = updated_row_series
         
-        aplicar_filtros() # Updates the table respecting filters after edit
-        lbl_status.config(text="Dados editados com sucesso!", fg="green")
-    elif novo_valor is not None:
-        lbl_status.config(text="Nenhuma alteração válida foi feita.", fg="orange")
+        aplicar_filtros()
+        lbl_status.config(text=f"✅ Linha {indice_df_original}, Coluna '{coluna_para_editar}' atualizada.", foreground="green")
+    elif novo_valor_str is not None: # Se não cancelou, mas também não houve mudança válida
+        lbl_status.config(text="ℹ️ Nenhuma alteração aplicada.", foreground="blue")
+
+
+def excluir_funcionario_por_id():
+    global df
+    if df.empty:
+        messagebox.showwarning("Aviso", "Nenhuma planilha carregada.")
+        return
+
+    ids_para_excluir_str = simpledialog.askstring("Excluir Funcionário por ID", "Digite os IDs a serem removidos, separados por vírgula:")
+    if not ids_para_excluir_str:
+        lbl_status.config(text="ℹ️ Exclusão cancelada.", foreground="blue")
+        return
+
+    ids_lista = [s.strip() for s in ids_para_excluir_str.split(",") if s.strip()]
+    if not ids_lista:
+        lbl_status.config(text="ℹ️ Nenhum ID válido fornecido.", foreground="orange")
+        return
+
+    ids_encontrados_df = df[COL_ID].unique()
+    ids_a_remover = [id_val for id_val in ids_lista if id_val in ids_encontrados_df]
+    ids_nao_encontrados = [id_val for id_val in ids_lista if id_val not in ids_encontrados_df]
+
+    msg_nao_encontrados = f"IDs não encontrados: {', '.join(ids_nao_encontrados)}." if ids_nao_encontrados else ""
+
+    if not ids_a_remover:
+        lbl_status.config(text=f"ℹ️ Nenhum dos IDs fornecidos foi encontrado. {msg_nao_encontrados}", foreground="orange")
+        messagebox.showinfo("Exclusão", f"Nenhum dos IDs fornecidos foi encontrado na planilha.\n{msg_nao_encontrados}")
+        return
+
+    confirmar = messagebox.askyesno("Confirmar Exclusão", 
+                                     f"Remover todos os registros dos IDs: {', '.join(ids_a_remover)}?\n{msg_nao_encontrados}")
+    if confirmar:
+        df = df[~df[COL_ID].isin(ids_a_remover)].reset_index(drop=True)
+        aplicar_filtros()
+        status_msg = f"✅ IDs removidos: {', '.join(ids_a_remover)}. {msg_nao_encontrados}"
+        lbl_status.config(text=status_msg.strip(), fg="green")
+        if df.empty: # Se todos os dados foram removidos
+            update_button_states() # Desabilitar botões
     else:
-        lbl_status.config(text="Edição cancelada.", fg="orange")
+        lbl_status.config(text="ℹ️ Exclusão cancelada.", foreground="blue")
 
 
 def remover_sabado_domingo_manual():
     global df
-    if df.empty:
-        messagebox.showinfo("Informação", "Nenhuma planilha carregada.")
+    if df.empty or not tabela.selection():
+        messagebox.showwarning("Aviso", "Nenhuma planilha carregada ou nenhuma linha selecionada.")
         return
 
-    selecionados_iids = tabela.selection()
-
-    if not selecionados_iids:
-        lbl_status.config(text="Selecione as linhas de Sábados/Domingos para remover.", fg="orange")
-        return
-
-    confirmar = messagebox.askyesno(
-        "Confirmar Remoção",
-        f"Você realmente deseja tentar remover {len(selecionados_iids)} registro(s) selecionado(s) que sejam Sábados ou Domingos?"
-    )
+    selecionados_iids_treeview = tabela.selection()
+    confirmar = messagebox.askyesno("Confirmar Remoção",
+        f"Remover os {len(selecionados_iids_treeview)} registro(s) selecionado(s) que sejam Sábados ou Domingos?")
 
     if confirmar:
-        indices_df_para_remover_final = []
-        indices_df_invalidos_dia_semana = []
-        dias_para_remover = {"sabado", "domingo"}
+        indices_df_para_remover = []
+        indices_nao_removidos = []
+        dias_para_remover_norm = {"sabado", "domingo"}
 
-        def normalize_text(text):
-            return unicodedata.normalize('NFKD', text).encode('ASCII', 'ignore').decode('utf-8')
+        def normalize_text_simple(text):
+            if pd.isna(text): return ""
+            return unicodedata.normalize('NFKD', str(text)).encode('ASCII', 'ignore').decode('utf-8').lower().strip()
 
-        for item_iid in selecionados_iids:
-            indice_df_original = int(item_iid) 
-            
-            if indice_df_original not in df.index:
-                continue 
-
-            try:
-                dia_da_semana_original = str(df.loc[indice_df_original, COL_SEMANA])
-                dia_da_semana_normalizado = normalize_text(dia_da_semana_original).lower().strip()
-                if dia_da_semana_normalizado in dias_para_remover:
-                    indices_df_para_remover_final.append(indice_df_original)
+        for item_iid_str in selecionados_iids_treeview:
+            indice_df = int(item_iid_str)
+            if indice_df in df.index:
+                dia_semana = normalize_text_simple(df.loc[indice_df, COL_SEMANA])
+                if dia_semana in dias_para_remover_norm:
+                    indices_df_para_remover.append(indice_df)
                 else:
-                    indices_df_invalidos_dia_semana.append(indice_df_original)
-            except KeyError:
-                messagebox.showerror("Erro", f"Coluna '{COL_SEMANA}' não encontrada no DataFrame. Não é possível verificar o dia.")
-                return
-            except Exception as e:
-                messagebox.showerror("Erro", f"Erro ao processar linha {indice_df_original}: {e}")
-                continue
+                    indices_nao_removidos.append(str(indice_df))
+            else: # Segurança, caso o índice não exista mais no df
+                print(f"Aviso: Índice {indice_df} da seleção não encontrado no DataFrame durante remoção S/D.")
 
-        if indices_df_invalidos_dia_semana:
-            messagebox.showwarning("Aviso de Remoção",
-                                    f"Os seguintes IDs de linha selecionados não são Sábados ou Domingos e não foram removidos: {', '.join(map(str, indices_df_invalidos_dia_semana))}. \n\n"
-                                    "Apenas linhas com 'Sábado' ou 'Domingo' na coluna 'Semana' serão removidas.")
 
-        if not indices_df_para_remover_final:
-            lbl_status.config(text="Nenhum Sábado ou Domingo válido encontrado entre os selecionados para remoção.", fg="orange")
+        if indices_nao_removidos:
+            messagebox.showwarning("Aviso Parcial", f"Algumas linhas selecionadas não eram Sábados/Domingos e não foram removidas (Índices: {', '.join(indices_nao_removidos)}).")
+
+        if not indices_df_para_remover:
+            lbl_status.config(text="ℹ️ Nenhum Sábado/Domingo válido selecionado para remoção.", foreground="orange")
+            if not indices_nao_removidos: messagebox.showinfo("Informação", "Nenhuma linha válida (Sábado/Domingo) foi selecionada.")
             return
-
-        df = df.drop(indices_df_para_remover_final).reset_index(drop=True)
-        aplicar_filtros() # Atualiza a tabela com os filtros aplicados
-        lbl_status.config(text=f"{len(indices_df_para_remover_final)} registro(s) de Sábado/Domingo removido(s) com sucesso!", fg="green")
+        
+        df.drop(indices_df_para_remover, inplace=True)
+        df.reset_index(drop=True, inplace=True)
+        aplicar_filtros()
+        lbl_status.config(text=f"✅ {len(indices_df_para_remover)} registro(s) de Sábado/Domingo removido(s).", fg="green")
+        if df.empty: update_button_states()
     else:
-        lbl_status.config(text="Remoção de Sábado/Domingo cancelada.", fg="orange")
+        lbl_status.config(text="ℹ️ Remoção de Sábado/Domingo cancelada.", foreground="blue")
+
 
 def calcular_totais_funcionario():
     global df
     if df.empty:
-        messagebox.showinfo("Informação", "Nenhuma planilha carregada.")
+        messagebox.showwarning("Aviso", "Nenhuma planilha carregada para calcular totais.")
         return
 
-    root.config(cursor="watch")
-    root.update_idletasks()
-
+    root.config(cursor="watch"); root.update_idletasks()
     try:
+        for col_hora in [COL_HORAS_NORMAIS, COL_HORAS_EXTRAS, COL_HORAS_DEVIDAS]:
+            if col_hora not in df.columns: df[col_hora] = HORA_ZERO
+            df[col_hora] = df[col_hora].astype(str).fillna(HORA_ZERO)
+        if COL_VALOR_HORA_EXTRA not in df.columns: df[COL_VALOR_HORA_EXTRA] = 0.0
+        df[COL_VALOR_HORA_EXTRA] = pd.to_numeric(df[COL_VALOR_HORA_EXTRA], errors='coerce').fillna(0.0)
+
         resumo_funcionarios = {}
-        # Calculate totals based on the global DataFrame (which is always up-to-date)
-        df_for_totals = df.copy() 
+        nomes_unicos = [n for n in df[COL_NOME].unique() if pd.notna(n) and str(n).strip() != ""]
 
-        for nome in df_for_totals[COL_NOME].unique():
-            df_funcionario = df_for_totals[df_for_totals[COL_NOME] == nome]
-            
-            total_horas_normais = pd.to_timedelta(df_funcionario[COL_HORAS_NORMAIS].astype(str), errors='coerce').sum()
-            total_horas_extras = pd.to_timedelta(
-                df_funcionario[COL_HORAS_EXTRAS].astype(str).replace(['', ERRO_FORMATO, ERRO_SEQUENCIA], HORA_ZERO), 
-                errors='coerce'
-            ).sum()
-            total_horas_devidas = pd.to_timedelta(
-                df_funcionario[COL_HORAS_DEVIDAS].astype(str).replace(['', ERRO_FORMATO, ERRO_SEQUENCIA], HORA_ZERO), 
-                errors='coerce'
-            ).sum()
-            
-            total_valor_hora_extra = df_funcionario[COL_VALOR_HORA_EXTRA].sum()
+        for nome in nomes_unicos:
+            df_f = df[df[COL_NOME] == nome]
+            total_hn_td = pd.to_timedelta(df_f[COL_HORAS_NORMAIS].replace(['',ERRO_FORMATO,ERRO_SEQUENCIA,'nan','NaT'], HORA_ZERO), errors='coerce').sum()
+            total_he_td = pd.to_timedelta(df_f[COL_HORAS_EXTRAS].replace(['',ERRO_FORMATO,ERRO_SEQUENCIA,'nan','NaT'], HORA_ZERO), errors='coerce').sum()
+            total_hd_td = pd.to_timedelta(df_f[COL_HORAS_DEVIDAS].replace(['',ERRO_FORMATO,ERRO_SEQUENCIA,'nan','NaT'], HORA_ZERO), errors='coerce').sum()
+            total_valor_he = df_f[COL_VALOR_HORA_EXTRA].sum()
 
-            def format_timedelta(td):
-                total_seconds = int(td.total_seconds())
-                sign = "-" if total_seconds < 0 else ""
-                total_seconds = abs(total_seconds)
-                hours = total_seconds // 3600
-                minutes = (total_seconds % 3600) // 60
-                return f"{sign}{hours:02}:{minutes:02}"
+            def fmt_td(td):
+                if pd.isna(td): return "00:00"
+                s, h, m = int(td.total_seconds()), 0, 0
+                sign = "-" if s < 0 else ""
+                s = abs(s)
+                h = s // 3600
+                m = (s % 3600) // 60
+                return f"{sign}{h:02d}:{m:02d}"
 
             resumo_funcionarios[nome] = {
-                "Total Horas Normais": format_timedelta(total_horas_normais),
-                "Total Horas Extras": format_timedelta(total_horas_extras),
-                "Total Horas Devidas": format_timedelta(total_horas_devidas),
-                "Total a Receber Horas Extras": f"{total_valor_hora_extra:.2f}"
+                "Total Horas Normais": fmt_td(total_hn_td),
+                "Total Horas Extras": fmt_td(total_he_td),
+                "Total Horas Devidas": fmt_td(total_hd_td),
+                "Total a Receber Horas Extras": locale.format_string("%.2f", total_valor_he, grouping=True)
             }
-
-        exibir_resumo_totais(resumo_funcionarios)
-        lbl_status.config(text="Cálculo de totais por funcionário realizado.", fg="green")
-
+        
+        if not resumo_funcionarios: messagebox.showinfo("Resumo", "Nenhum dado para resumir.")
+        else: exibir_resumo_totais(resumo_funcionarios)
+        lbl_status.config(text="✅ Cálculo de totais por funcionário realizado.", fg="green")
     except Exception as e:
-        lbl_status.config(text=f"Erro ao calcular totais por funcionário: {e}", fg="red")
-        messagebox.showerror("Erro no Cálculo", f"Ocorreu um erro ao calcular os totais: {e}")
+        lbl_status.config(text=f"❌ Erro ao calcular totais: {e}", fg="red")
+        messagebox.showerror("Erro no Cálculo", f"Ocorreu um erro: {e}")
     finally:
         root.config(cursor="")
-
 
 def exibir_resumo_totais(resumo_data):
     total_window = tk.Toplevel(root)
     total_window.title("Resumo de Totais por Funcionário")
-    total_window.geometry("700x500")
-    total_window.transient(root) # Faz com que a janela de resumo fique sobre a principal
-    total_window.grab_set() # Bloqueia interações com a janela principal
+    total_window.geometry("800x550")
+    total_window.transient(root); total_window.grab_set()
+    
+    style_resumo = ttk.Style(total_window)
+    if 'clam' in style_resumo.theme_names(): style_resumo.theme_use('clam')
+    style_resumo.configure('Resumo.Treeview.Heading', font=('Calibri', 10, 'bold'))
 
-    frame_resumo = ttk.Frame(total_window)
-    frame_resumo.pack(fill="both", expand=True, padx=10, pady=10)
 
-    tree_resumo = ttk.Treeview(frame_resumo, columns=("Funcionário", "Horas Normais", "Horas Extras", "Horas Devidas", "Valor Hora Extra"), show="headings")
-    tree_resumo.pack(side="left", fill="both", expand=True)
+    frame_resumo = ttk.Frame(total_window, padding="10")
+    frame_resumo.pack(fill="both", expand=True)
 
-    scrollbar_y_resumo = ttk.Scrollbar(frame_resumo, orient="vertical", command=tree_resumo.yview)
-    scrollbar_y_resumo.pack(side="right", fill="y")
-    tree_resumo.config(yscrollcommand=scrollbar_y_resumo.set)
+    cols_r = ("Funcionário", "H. Normais", "H. Extras", "H. Devidas", "Valor HE (R$)")
+    tree_r = ttk.Treeview(frame_resumo, columns=cols_r, show="headings", style='Resumo.Treeview')
+    tree_r.pack(side="left", fill="both", expand=True)
+    scrolly_r = ttk.Scrollbar(frame_resumo, orient="vertical", command=tree_r.yview)
+    scrolly_r.pack(side="right", fill="y")
+    tree_r.config(yscrollcommand=scrolly_r.set)
 
-    tree_resumo.heading("Funcionário", text="Funcionário")
-    tree_resumo.heading("Horas Normais", text="H. Normais")
-    tree_resumo.heading("Horas Extras", text="H. Extras")
-    tree_resumo.heading("Horas Devidas", text="H. Devidas")
-    tree_resumo.heading("Valor Hora Extra", text="V. H. Extra (R$)")
-
-    tree_resumo.column("Funcionário", width=150, anchor="w")
-    tree_resumo.column("Horas Normais", width=100, anchor="center")
-    tree_resumo.column("Horas Extras", width=100, anchor="center")
-    tree_resumo.column("Horas Devidas", width=100, anchor="center")
-    tree_resumo.column("Valor Hora Extra", width=120, anchor="e")
+    col_widths_r = {"Funcionário": 220, "H. Normais":100, "H. Extras":100, "H. Devidas":100, "Valor HE (R$)":130}
+    col_anchors_r = {"Funcionário": "w", "Valor HE (R$)": "e"}
+    for col in cols_r:
+        tree_r.heading(col, text=col)
+        tree_r.column(col, width=col_widths_r.get(col, 100), anchor=col_anchors_r.get(col, "center"), minwidth=60)
 
     for nome, totais in resumo_data.items():
-        tree_resumo.insert("", "end", values=(
-            nome,
-            totais["Total Horas Normais"],
-            totais["Total Horas Extras"],
-            totais["Total Horas Devidas"],
-            totais["Total a Receber Horas Extras"].replace('.', ',')
+        tree_r.insert("", "end", values=(
+            nome, totais["Total Horas Normais"], totais["Total Horas Extras"],
+            totais["Total Horas Devidas"], totais["Total a Receber Horas Extras"]
         ))
-
-    btn_fechar = ttk.Button(total_window, text="Fechar", command=total_window.destroy)
-    btn_fechar.pack(pady=10)
-
+    
+    ttk.Button(total_window, text="Fechar", command=total_window.destroy).pack(pady=10)
+    total_window.update_idletasks()
+    x = (total_window.winfo_screenwidth() // 2) - (total_window.winfo_width() // 2)
+    y = (total_window.winfo_screenheight() // 2) - (total_window.winfo_height() // 2)
+    total_window.geometry(f'+{x}+{y}')
     root.wait_window(total_window)
+
 
 def salvar_planilha():
     global df
@@ -756,75 +720,109 @@ def salvar_planilha():
 
 def abrir_configuracoes():
     config_window = tk.Toplevel(root)
-    config_window.title("Configurações do Aplicativo")
-    config_window.geometry("400x250")
+    config_window.title("Configurações")
+    config_window.geometry("480x280")
     config_window.resizable(False, False)
-    config_window.transient(root)
-    config_window.grab_set()
+    config_window.transient(root); config_window.grab_set()
 
-    lbl_horas_normais = ttk.Label(config_window, text="Horas Normais de Trabalho (decimal, ex: 8.8 para 08:48):")
-    lbl_horas_normais.pack(pady=5, padx=10, anchor="w")
-    entry_horas_normais = ttk.Entry(config_window)
-    entry_horas_normais.insert(0, str(app_config["horas_normais_h"]).replace('.', ','))
-    entry_horas_normais.pack(pady=2, padx=10, fill="x")
+    style_cfg = ttk.Style(config_window)
+    if 'clam' in style_cfg.theme_names(): style_cfg.theme_use('clam')
+    style_cfg.configure('.', font=('Calibri', 10))
 
-    lbl_multiplicador = ttk.Label(config_window, text="Multiplicador de Hora Extra (ex: 1.5 para 50% de adicional):")
-    lbl_multiplicador.pack(pady=5, padx=10, anchor="w")
-    entry_multiplicador = ttk.Entry(config_window)
-    entry_multiplicador.insert(0, str(app_config["multiplicador_hora_extra"]).replace('.', ','))
-    entry_multiplicador.pack(pady=2, padx=10, fill="x")
+    frame_cfg = ttk.Frame(config_window, padding="15")
+    frame_cfg.pack(expand=True, fill="both")
 
-    def salvar_e_fechar():
+    ttk.Label(frame_cfg, text="Horas Normais de Trabalho por Dia:").grid(row=0, column=0, sticky="w", pady=5)
+    entry_hn = ttk.Entry(frame_cfg, width=10)
+    entry_hn.grid(row=0, column=1, sticky="e", pady=5, padx=(10,0))
+    entry_hn.insert(0, str(app_config["horas_normais_h"]).replace('.', ','))
+    ttk.Label(frame_cfg, text="(Ex: 8.8 para 08:48)").grid(row=1, column=0, columnspan=2, sticky="w", padx=5, pady=(0,10))
+
+    ttk.Label(frame_cfg, text="Multiplicador de Hora Extra:").grid(row=2, column=0, sticky="w", pady=5)
+    entry_mult = ttk.Entry(frame_cfg, width=10)
+    entry_mult.grid(row=2, column=1, sticky="e", pady=5, padx=(10,0))
+    entry_mult.insert(0, str(app_config["multiplicador_hora_extra"]).replace('.', ','))
+    ttk.Label(frame_cfg, text="(Ex: 1.5 para 50% adicional)").grid(row=3, column=0, columnspan=2, sticky="w", padx=5, pady=(0,10))
+
+    def salvar_cfg_local():
         try:
-            novas_horas_normais = float(entry_horas_normais.get().replace(',', '.'))
-            novo_multiplicador = float(entry_multiplicador.get().replace(',', '.'))
-
-            if novas_horas_normais <= 0 or novas_horas_normais > 24:
-                messagebox.showerror("Erro de Validação", "Horas normais devem ser um valor positivo entre 0 e 24.")
+            hn_str = entry_hn.get().replace(',', '.')
+            mult_str = entry_mult.get().replace(',', '.')
+            if not hn_str or not mult_str:
+                messagebox.showerror("Erro", "Campos não podem ser vazios.", parent=config_window)
                 return
-            if novo_multiplicador <= 0:
-                messagebox.showerror("Erro de Validação", "Multiplicador de hora extra deve ser um valor positivo.")
+            
+            novas_hn = float(hn_str)
+            novo_mult = float(mult_str)
+
+            if not (0 < novas_hn <= 24):
+                messagebox.showerror("Erro", "Horas normais entre 0 e 24.", parent=config_window)
+                return
+            if novo_mult <= 0:
+                messagebox.showerror("Erro", "Multiplicador deve ser positivo.", parent=config_window)
                 return
 
-            app_config["horas_normais_h"] = novas_horas_normais
-            app_config["multiplicador_hora_extra"] = novo_multiplicador
+            app_config["horas_normais_h"] = novas_hn
+            app_config["multiplicador_hora_extra"] = novo_mult
             save_config()
-            messagebox.showinfo("Configurações", "Configurações salvas e aplicadas! A tabela será atualizada.")
+            
+            if not df.empty:
+                h_int = int(app_config["horas_normais_h"])
+                m_int = int((app_config["horas_normais_h"] * 60) % 60)
+                df[COL_HORAS_NORMAIS] = f"{h_int:02}:{m_int:02}"
+                calcular_todas_horas_e_extras()
+                aplicar_filtros()
+            
+            messagebox.showinfo("Sucesso", "Configurações salvas!", parent=config_window)
             config_window.destroy()
-            calcular_todas_horas_e_extras() # Recalcula todo o DataFrame com as novas configurações
-            aplicar_filtros() # Atualiza a exibição da tabela
         except ValueError:
-            messagebox.showerror("Erro de Entrada", "Por favor, insira valores numéricos válidos (use vírgula ou ponto para decimais).")
-        except Exception as e:
-            messagebox.showerror("Erro", f"Ocorreu um erro ao salvar as configurações: {e}")
+            messagebox.showerror("Erro", "Valores numéricos inválidos.", parent=config_window)
+        except Exception as e_cfg:
+            messagebox.showerror("Erro", f"Erro ao salvar: {e_cfg}", parent=config_window)
 
-    btn_salvar_config = ttk.Button(config_window, text="Salvar e Fechar", command=salvar_e_fechar)
-    btn_salvar_config.pack(pady=15)
-
+    frame_botoes_cfg = ttk.Frame(frame_cfg)
+    frame_botoes_cfg.grid(row=4, column=0, columnspan=2, pady=(20,0), sticky="e")
+    ttk.Button(frame_botoes_cfg, text="Salvar", command=salvar_cfg_local).pack(side="left", padx=5)
+    ttk.Button(frame_botoes_cfg, text="Cancelar", command=config_window.destroy).pack(side="left")
+    
+    config_window.update_idletasks()
+    x = (config_window.winfo_screenwidth() // 2) - (config_window.winfo_width() // 2)
+    y = (config_window.winfo_screenheight() // 2) - (config_window.winfo_height() // 2)
+    config_window.geometry(f'+{x}+{y}')
     root.wait_window(config_window)
 
 
-# --- FUNCIONALIDADES DE FILTRO ---
-def aplicar_filtros():
+def aplicar_filtros(event=None):
     if df.empty:
         atualizar_tabela()
+        lbl_status.config(text="ℹ️ Nenhuma planilha carregada para filtrar.", foreground="blue")
         return
 
     df_filtrado = df.copy()
+    id_f = entry_filtro_id.get().strip().lower()
+    nome_f = unicodedata.normalize('NFKD', entry_filtro_nome.get().strip().lower()).encode('ASCII', 'ignore').decode('utf-8')
+    area_f = unicodedata.normalize('NFKD', entry_filtro_area.get().strip().lower()).encode('ASCII', 'ignore').decode('utf-8')
 
-    id_filtro_val = entry_filtro_id.get().strip()
-    if id_filtro_val:
-        df_filtrado = df_filtrado[df_filtrado[COL_ID].str.contains(id_filtro_val, case=False, na=False)]
-
-    nome_filtro_val = entry_filtro_nome.get().strip()
-    if nome_filtro_val:
-        df_filtrado = df_filtrado[df_filtrado[COL_NOME].apply(lambda x: unicodedata.normalize('NFKD', str(x)).encode('ASCII', 'ignore').decode('utf-8').lower().find(unicodedata.normalize('NFKD', nome_filtro_val).encode('ASCII', 'ignore').decode('utf-8').lower()) != -1)]
-
-    area_filtro_val = entry_filtro_area.get().strip()
-    if area_filtro_val:
-        df_filtrado = df_filtrado[df_filtrado[COL_AREA].apply(lambda x: unicodedata.normalize('NFKD', str(x)).encode('ASCII', 'ignore').decode('utf-8').lower().find(unicodedata.normalize('NFKD', area_filtro_val).encode('ASCII', 'ignore').decode('utf-8').lower()) != -1)]
+    if id_f: df_filtrado = df_filtrado[df_filtrado[COL_ID].str.lower().str.contains(id_f, na=False)]
+    if nome_f:
+        df_filtrado = df_filtrado[df_filtrado[COL_NOME].astype(str).apply(
+            lambda x: unicodedata.normalize('NFKD', x.lower()).encode('ASCII', 'ignore').decode('utf-8')
+        ).str.contains(nome_f, na=False)]
+    if area_f:
+        df_filtrado = df_filtrado[df_filtrado[COL_AREA].astype(str).apply(
+            lambda x: unicodedata.normalize('NFKD', x.lower()).encode('ASCII', 'ignore').decode('utf-8')
+        ).str.contains(area_f, na=False)]
 
     atualizar_tabela(df_filtrado)
+    if df_filtrado.empty and (id_f or nome_f or area_f):
+        lbl_status.config(text="ℹ️ Nenhum resultado para os filtros aplicados.", foreground="orange")
+    elif not df_filtrado.empty :
+         lbl_status.config(text=f"ℹ️ Filtros aplicados. {len(df_filtrado)} linha(s) exibida(s).", foreground="blue")
+    elif df.empty: # Se o df original já estava vazio
+        lbl_status.config(text="ℹ️ Nenhuma planilha carregada.", foreground="blue")
+    else: # df original tem dados, mas filtro limpou tudo ou nenhum filtro aplicado
+        lbl_status.config(text=f"ℹ️ Tabela atualizada. {len(df_filtrado)} linha(s) exibida(s).", foreground="blue")
+
 
 
 def limpar_filtros():
@@ -832,82 +830,128 @@ def limpar_filtros():
     entry_filtro_nome.delete(0, tk.END)
     entry_filtro_area.delete(0, tk.END)
     aplicar_filtros()
+    lbl_status.config(text="ℹ️ Filtros limpos. Exibindo todos os dados.", foreground="blue")
+
+
+def on_treeview_select(event=None):
+    """Chamado quando a seleção na Treeview muda."""
+    update_button_states()
 
 
 # --- INTERFACE GRÁFICA ---
 root = tk.Tk()
-root.title("Visualizador e Editor de Planilha de Ponto")
-root.geometry("1400x850")
+root.title("Calculadora de Ponto e Horas Extras")
+root.geometry("1450x800") # Aumentei um pouco para acomodar melhor os espaçamentos
 
-frame_tabela = tk.Frame(root)
-frame_tabela.pack(pady=10, padx=10, fill="both", expand=True)
+# --- ESTILO E TEMA ---
+style = ttk.Style()
+available_themes = style.theme_names()
+# print(f"Temas disponíveis: {available_themes}") # Para debug
+if 'clam' in available_themes:
+    style.theme_use('clam')
+elif 'alt' in available_themes:
+    style.theme_use('alt')
+# Adicione outros temas de fallback se desejar
 
-tabela = ttk.Treeview(frame_tabela)
+style.configure('.', font=('Calibri', 10)) # Fonte padrão para todos os widgets ttk
+style.configure('Treeview.Heading', font=('Calibri', 10, 'bold')) # Cabeçalhos da tabela
+style.configure('TLabelframe.Label', font=('Calibri', 10, 'bold')) # Título do LabelFrame
 
-scrollbar_y = ttk.Scrollbar(frame_tabela, orient="vertical", command=tabela.yview)
+try:
+#     # Substitua "path/to/icon.png" pelo caminho real dos seus ícones
+    icon_folder_img = Image.open("icons/folder-open.png").resize((16,16))
+    icon_folder = ImageTk.PhotoImage(icon_folder_img)
+    icon_save_img = Image.open("icons/save.png").resize((16,16))
+    icon_save_action = ImageTk.PhotoImage(icon_save_img)
+#     # Carregue outros ícones conforme necessário
+except Exception as e_icon: 
+    print(f"Erro ao carregar ícones (Pillow): {e_icon}. Usando botões sem ícones.")
+icon_folder = None # Define como None se não carregar
+icon_save_action = None
+
+
+# --- LAYOUT DA INTERFACE ---
+
+# 1. Frame para Ações Principais (Topo)
+frame_acoes_topo = ttk.Frame(root, padding="10 5 10 5") # E, C, D, B
+frame_acoes_topo.pack(fill='x')
+
+btn_selecionar = ttk.Button(frame_acoes_topo, text="Selecionar Arquivo", command=selecionar_arquivo, image=icon_folder, compound="left")
+btn_selecionar.pack(side="left", padx=(0,5)) # (padx_esq, padx_dir)
+
+btn_salvar = ttk.Button(frame_acoes_topo, text="Salvar como Excel", command=salvar_planilha, state="disabled", image=icon_save_action, compound="left")
+btn_salvar.pack(side="left", padx=5)
+
+btn_config = ttk.Button(frame_acoes_topo, text="Configurações", command=abrir_configuracoes)
+btn_config.pack(side="right", padx=5) # Alinha à direita
+
+
+# 2. Frame para Filtros
+frame_filtros_ui = ttk.LabelFrame(root, text="Filtros de Exibição", padding="10 10 10 10")
+frame_filtros_ui.pack(fill='x', padx=10, pady=5)
+
+ttk.Label(frame_filtros_ui, text="ID:").pack(side="left", padx=(0,2))
+entry_filtro_id = ttk.Entry(frame_filtros_ui, width=12)
+entry_filtro_id.pack(side="left", padx=(0,10))
+entry_filtro_id.bind("<KeyRelease>", aplicar_filtros)
+
+ttk.Label(frame_filtros_ui, text="Nome:").pack(side="left", padx=(0,2))
+entry_filtro_nome = ttk.Entry(frame_filtros_ui, width=25)
+entry_filtro_nome.pack(side="left", padx=(0,10))
+entry_filtro_nome.bind("<KeyRelease>", aplicar_filtros)
+
+ttk.Label(frame_filtros_ui, text="Área:").pack(side="left", padx=(0,2))
+entry_filtro_area = ttk.Entry(frame_filtros_ui, width=18)
+entry_filtro_area.pack(side="left", padx=(0,15))
+entry_filtro_area.bind("<KeyRelease>", aplicar_filtros)
+
+btn_limpar_filtros = ttk.Button(frame_filtros_ui, text="Limpar Filtros", command=limpar_filtros)
+btn_limpar_filtros.pack(side="left")
+
+
+# 3. Frame para a Tabela (Principal)
+frame_tabela_ui = ttk.Frame(root, padding=(10, 0, 10, 5)) # (E, C, D, B)
+frame_tabela_ui.pack(fill='both', expand=True)
+
+tabela = ttk.Treeview(frame_tabela_ui, selectmode='browse') # browse = seleciona uma linha
+tabela.bind("<<TreeviewSelect>>", on_treeview_select) # Chama a função ao selecionar
+
+scrollbar_y = ttk.Scrollbar(frame_tabela_ui, orient="vertical", command=tabela.yview)
 scrollbar_y.pack(side="right", fill="y")
-tabela.config(yscrollcommand=scrollbar_y.set)
+tabela.configure(yscrollcommand=scrollbar_y.set)
 
-scrollbar_x = ttk.Scrollbar(frame_tabela, orient="horizontal", command=tabela.xview)
+scrollbar_x = ttk.Scrollbar(frame_tabela_ui, orient="horizontal", command=tabela.xview)
 scrollbar_x.pack(side="bottom", fill="x")
-tabela.config(xscrollcommand=scrollbar_x.set)
+tabela.configure(xscrollcommand=scrollbar_x.set)
 
-tabela.pack(side="left", fill="both", expand=True)
-
-frame_botoes = tk.Frame(root)
-frame_botoes.pack(pady=5, padx=10, fill="x")
-
-btn_selecionar = tk.Button(frame_botoes, text="Selecionar Arquivo", command=selecionar_arquivo, width=15)
-btn_selecionar.pack(side="left", padx=5, pady=5)
-
-btn_editar = tk.Button(frame_botoes, text="Editar Célula", command=editar_celula, width=15)
-btn_editar.pack(side="left", padx=5, pady=5)
-
-btn_excluir_id = tk.Button(frame_botoes, text="Excluir por ID", command=excluir_funcionario_por_id, width=15)
-btn_excluir_id.pack(side="left", padx=5, pady=5)
-
-btn_remover_fds = tk.Button(frame_botoes, text="Remover Sab/Dom", command=remover_sabado_domingo_manual, width=18)
-btn_remover_fds.pack(side="left", padx=5, pady=5)
-
-btn_calcular_totais = tk.Button(frame_botoes, text="Calcular Totais", command=calcular_totais_funcionario, width=15)
-btn_calcular_totais.pack(side="left", padx=5, pady=5)
-
-btn_salvar = tk.Button(frame_botoes, text="Salvar como Excel", command=salvar_planilha, width=18)
-btn_salvar.pack(side="left", padx=5, pady=5)
-
-btn_config = tk.Button(frame_botoes, text="Configurações", command=abrir_configuracoes, width=15)
-btn_config.pack(side="left", padx=5, pady=5)
+tabela.pack(side="left", fill='both', expand=True)
 
 
-frame_filtros = tk.LabelFrame(root, text="Filtros")
-frame_filtros.pack(pady=10, padx=10, fill="x")
+# 4. Frame para Ações de Edição e Cálculo (Abaixo da tabela)
+frame_acoes_edicao_calc = ttk.Frame(root, padding="10 5 10 5")
+frame_acoes_edicao_calc.pack(fill='x')
 
-lbl_filtro_id = ttk.Label(frame_filtros, text="ID:")
-lbl_filtro_id.pack(side="left", padx=(5,2), pady=5)
-entry_filtro_id = ttk.Entry(frame_filtros, width=10)
-entry_filtro_id.pack(side="left", padx=2, pady=5)
-entry_filtro_id.bind("<KeyRelease>", lambda event: aplicar_filtros())
+btn_editar = ttk.Button(frame_acoes_edicao_calc, text="Editar Célula Sel.", command=editar_celula, state="disabled")
+btn_editar.pack(side="left", padx=(0,5))
 
-lbl_filtro_nome = ttk.Label(frame_filtros, text="Nome:")
-lbl_filtro_nome.pack(side="left", padx=(15,2), pady=5)
-entry_filtro_nome = ttk.Entry(frame_filtros, width=20)
-entry_filtro_nome.pack(side="left", padx=2, pady=5)
-entry_filtro_nome.bind("<KeyRelease>", lambda event: aplicar_filtros())
+btn_excluir_id = ttk.Button(frame_acoes_edicao_calc, text="Excluir por ID Digitado", command=excluir_funcionario_por_id, state="disabled")
+btn_excluir_id.pack(side="left", padx=5)
 
-lbl_filtro_area = ttk.Label(frame_filtros, text="Área:")
-lbl_filtro_area.pack(side="left", padx=(15,2), pady=5)
-entry_filtro_area = ttk.Entry(frame_filtros, width=15)
-entry_filtro_area.pack(side="left", padx=2, pady=5)
-entry_filtro_area.bind("<KeyRelease>", lambda event: aplicar_filtros())
+btn_remover_fds = ttk.Button(frame_acoes_edicao_calc, text="Remover Sab/Dom Sel.", command=remover_sabado_domingo_manual, state="disabled")
+btn_remover_fds.pack(side="left", padx=5)
 
-btn_limpar_filtros = ttk.Button(frame_filtros, text="Limpar Filtros", command=limpar_filtros)
-btn_limpar_filtros.pack(side="left", padx=(15,5), pady=5)
+btn_calcular_totais = ttk.Button(frame_acoes_edicao_calc, text="Calcular Totais (GUI)", command=calcular_totais_funcionario, state="disabled")
+btn_calcular_totais.pack(side="right", padx=5) # À direita
 
 
-lbl_status = tk.Label(root, text="Pronto.", font=("Arial", 10), relief=tk.SUNKEN, anchor='w')
-lbl_status.pack(side="bottom", fill="x", padx=10, pady=5)
+# 5. Barra de Status (Inferior)
+lbl_status = ttk.Label(root, text="ℹ️ Pronto. Carregue uma planilha para começar.", relief=tk.SUNKEN, anchor='w', padding=5)
+lbl_status.pack(side="bottom", fill="x", padx=10, pady=(0, 5))
 
+
+# --- INICIALIZAÇÃO ---
 load_config()
-aplicar_filtros() # Chamamos aplicar_filtros para inicializar a tabela com os filtros vazios (mostrar tudo)
+aplicar_filtros() # Para configurar a tabela e status inicial
+update_button_states() # Define o estado inicial dos botões
 
 root.mainloop()
