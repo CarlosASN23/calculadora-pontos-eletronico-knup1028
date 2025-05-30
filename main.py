@@ -709,6 +709,7 @@ def salvar_planilha():
                     df_funcionario.to_excel(writer, sheet_name=clean_nome, index=False)
 
             lbl_status.config(text=f"Planilha salva com sucesso em: {file_path}", fg="green")
+            messagebox.showinfo("Sucesso ao Salvar", f"Planilha salva com sucesso em:\n{file_path}")
         except Exception as e:
             lbl_status.config(text=f"Erro ao salvar planilha: {e}", fg="red")
             messagebox.showerror("Erro ao Salvar", f"Não foi possível salvar a planilha:\n{e}")
