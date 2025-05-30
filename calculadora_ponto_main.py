@@ -1,3 +1,7 @@
+# calculadora_ponto_main.py
+# Copyright (c) 2025 Carlos Alberto Souza Nascimento
+# Licenciado sob a Licença MIT. Veja o arquivo LICENSE para mais detalhes.
+
 """
 Calculadora de ponto e Horas Extras
 

@@ -141,4 +141,13 @@ Recomenda-se o uso de um ambiente virtual Python.
 
 Após instalar as dependências (dentro do ambiente virtual, se estiver usando um):
 ```bash
-python calculadora_ponto_main.py
+python calculadora_ponto_main.py```
+
+4. **Contribuições:**
+```Atualmente, este é um projeto de desenvolvimento individual```
+
+5. **Licença**
+Este projeto é licenciado sob os termos da Licença MIT. Veja o arquivo [LICENSE](LICENSE) para mais detalhes.
+
+## Autor:
+Carlos Alberto Souza Nascimento
