@@ -31,13 +31,14 @@ A **Calculadora de Ponto e Horas Extras** é uma aplicação de desktop desenvol
 
 ## Capturas de Tela
 
-* `![image](https://github.com/user-attachments/assets/485b3c64-2608-47f3-aae7-7a19c08b71c1)`
+* `![Tela Principal](./img/tele_principal.png)`
   
-* `![image](https://github.com/user-attachments/assets/609b78e1-5bad-422c-b569-d36062fb19f0)`
+* `![Tela Edição](./img/tela_edicao.png)`
   
-* `![image](https://github.com/user-attachments/assets/a0888c40-1353-4039-8f23-6d06c863296d)`
+* `![Tela Configuração](./img/tela_configuracao.png)`
   
-*`![image](https://github.com/user-attachments/assets/d16f982a-1793-4e94-9bba-cec808662b42)`
+* `![Tela Exclusão de usuários](./img/tela_exclusao_usuario.png)`
+
 ## Como Usar (Guia Rápido)
 
 1.  **Carregar Planilha:**
